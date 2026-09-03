@@ -1,0 +1,484 @@
+#!/usr/bin/env python3
+"""Control backend for the dashboard: start/stop projects, talk to their agent.
+
+Runs as the normal user on the loopback interface; nginx exposes it under
+/ctl/ and restricts that location to the tailnet. It is not plain nginx
+because commands (docker compose, dev servers) get executed here, and
+www-data must not be able to do that.
+
+SECURITY: the client NEVER sends a command. It sends a project name and a
+verb (start/stop, a hook name, free text for the agent). The command itself
+comes from the registry (projects.json, field "service" or "hooks"); a
+project without those fields cannot be controlled at all. Commands run
+without a shell (shlex + execvp), so nothing can be chained onto them. Text
+for the agent is pasted into tmux via load-buffer/paste-buffer (literal, no
+key interpretation) or passed to `claude -p` on stdin - never interpolated
+into a command line.
+
+State is not obtained by running "<ctl> status" (slow for docker projects).
+A TCP connect to the "probe" port is tried instead: the port the application
+itself listens on. Proxy ports (nginx) would report "up" while the app is
+long gone.
+
+Every toggle is remembered (fractal-autostart set) so that after a reboot only
+what was running comes back. It is written when the request is accepted, not
+when it finishes - a power cut in the middle of a start must not lose what
+the user asked for.
+
+Endpoints (all relative to /ctl/):
+    GET  /state                          up/busy/last per controllable project
+    POST /<project>/start|stop           run the registry command
+    POST /agent/<project>/send  {text}   paste text into the project's agent window
+    POST /agent/<project>/query {q}      headless question; returns {id}
+    GET  /agent/<project>/query/<id>     poll the streamed answer
+    POST /run/<project>/<hook>           run a named hook from the registry
+    GET  /run/<project>/<hook>           status of the last/current run
+"""
+import json
+import os
+import shlex
+import socket
+import subprocess
+import sys
+import threading
+import time
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+from fractal_config import CFG, HOME, REGISTRY, agent_cmd, bin_path_env, port  # noqa: E402
+
+PORT = port("CTL")
+PROBE_TIMEOUT = 0.4          # a local port answers at once, or it is down
+ACTION_TIMEOUT = 300         # docker compose up can be lazy, but not forever
+QUERY_TIMEOUT = 600
+HOOK_TIMEOUT = 1800
+MAX_TEXT = 100_000
+AGENT_WINDOW = CFG["FRACTAL_AGENT_WINDOW"]
+
+ENV = bin_path_env()
+
+# in flight: name -> {"action": "start"|"stop", "since": float}
+# last result: name -> {"ok": bool, "msg": str, "at": float}
+_busy: dict[str, dict] = {}
+_last: dict[str, dict] = {}
+_qjobs: dict[str, dict] = {}          # id -> {"done", "ok", "answer", "at"}
+_hooks: dict[str, dict] = {}          # "name/hook" -> {"running", "ok", "msg", "at", "took"}
+_lock = threading.Lock()
+
+
+def registry() -> dict:
+    """Read on every request - registry edits apply without a restart."""
+    with open(REGISTRY, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def project(name: str) -> dict:
+    for p in registry().get("projects", []):
+        if p.get("name") == name:
+            return p
+    return {}
+
+
+def services() -> dict:
+    """Projects that can be toggled: "service" with both start and stop."""
+    out = {}
+    for p in registry().get("projects", []):
+        svc = p.get("service") or {}
+        if svc.get("start") and svc.get("stop"):
+            out[p["name"]] = {"start": svc["start"], "stop": svc["stop"], "probe": svc.get("probe")}
+    return out
+
+
+def remember(name: str, action: str) -> None:
+    """Tell the autostart memory whether the project should be up after a reboot.
+
+    The file format is known only to fractal-autostart so it lives in one
+    place. If this fails the action still runs - the switch must not stop
+    working because the bookkeeping did.
+    """
+    try:
+        r = subprocess.run(["fractal-autostart", "set", name, "on" if action == "start" else "off"],
+                           capture_output=True, text=True, timeout=15, env=ENV)
+        if r.returncode:
+            print(f"autostart: could not remember {name}: {r.stderr.strip()}", flush=True)
+    except Exception as e:                                    # noqa: BLE001
+        print(f"autostart: could not remember {name}: {type(e).__name__}: {e}", flush=True)
+
+
+def port_open(p) -> bool:
+    if not p:
+        return False
+    try:
+        with socket.create_connection(("127.0.0.1", int(p)), PROBE_TIMEOUT):
+            return True
+    except OSError:
+        return False
+
+
+def snapshot() -> dict:
+    out = {}
+    with _lock:
+        busy, last = dict(_busy), dict(_last)
+    for name, svc in services().items():
+        b = busy.get(name)
+        out[name] = {"up": port_open(svc["probe"]), "busy": b["action"] if b else None,
+                     "last": last.get(name)}
+    return out
+
+
+def await_state(p, want_up: bool, grace: float) -> bool:
+    deadline = time.monotonic() + grace
+    while True:
+        if port_open(p) == want_up:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.5)
+
+
+def run_action(name: str, action: str, cmd: str, probe) -> None:
+    """Runs in its own thread; the HTTP response does not wait for it.
+
+    Success is NOT judged by the exit code. Control scripts are unreliable
+    there (e.g. a stop that ends with "tmux kill-window" on a window that is
+    already gone returns non-zero although the stop worked). The only honest
+    answer to "did it work?" is the state of the port.
+    """
+    out = ""
+    try:
+        r = subprocess.run(shlex.split(cmd), capture_output=True, text=True,
+                           timeout=ACTION_TIMEOUT, env=ENV, cwd=HOME)
+        out = ((r.stdout or "") + (r.stderr or "")).strip()[-600:]   # the reason is at the end
+    except subprocess.TimeoutExpired:
+        out = f"command did not finish within {ACTION_TIMEOUT} s"
+    except Exception as e:                                    # noqa: BLE001
+        out = f"{type(e).__name__}: {e}"
+
+    want_up = action == "start"
+    # start: a dev server binds its port a while after launch; stop: the port
+    # should vanish at once, waiting longer only delays the switch animation
+    ok = await_state(probe, want_up, 45 if want_up else 10)
+    if ok:
+        msg = ""
+    elif want_up:
+        msg = f"port {probe} did not come up\n{out}".strip()
+    else:
+        msg = f"port {probe} is still open\n{out}".strip()
+
+    with _lock:
+        _busy.pop(name, None)
+        _last[name] = {"ok": ok, "action": action, "msg": msg, "at": time.time()}
+
+
+# --- agent window: quick send and headless query ------------------------------
+# "send" pastes text into the interactive agent window of the project's tmux
+# session (the same one the browser terminal attaches to), so the conversation
+# can be continued there. "query" runs `claude -p` headless in the project
+# directory; the answer is a job the dashboard polls, so long thinking never
+# hits the nginx timeout.
+
+def _tmux(*args: str, text_in: str | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(["tmux", *args], input=text_in,
+                          capture_output=True, text=True, timeout=15, env=ENV)
+
+
+def agent_target(name: str) -> str:
+    return f"{name}:{AGENT_WINDOW}"
+
+
+def pane_exists(target: str) -> bool:
+    return _tmux("display", "-t", target, "-p", "").returncode == 0
+
+
+def agent_running(target: str) -> bool:
+    """Whether the agent really runs in the window.
+
+    pane_current_command is useless: the agent starts through a shell wrapper
+    ("claude -c ... || claude ...; exec bash") so tmux reports "bash" even
+    while claude lives. Walk the process tree under pane_pid instead."""
+    r = _tmux("display", "-t", target, "-p", "#{pane_pid}")
+    if r.returncode != 0 or not r.stdout.strip().isdigit():
+        return False
+    root = int(r.stdout.strip())
+    try:
+        ps = subprocess.run(["ps", "-e", "-o", "pid=,ppid=,comm="],
+                            capture_output=True, text=True, timeout=10).stdout
+    except Exception:                                         # noqa: BLE001
+        return False
+    children: dict[int, list[int]] = {}
+    comm: dict[int, str] = {}
+    for line in ps.splitlines():
+        f = line.split(None, 2)
+        if len(f) < 3:
+            continue
+        pid, ppid = int(f[0]), int(f[1])
+        children.setdefault(ppid, []).append(pid)
+        comm[pid] = f[2]
+    agent = CFG["FRACTAL_AGENT"]
+    stack = [root]
+    while stack:
+        cur = stack.pop()
+        if comm.get(cur, "").startswith((agent, "node")):
+            return True
+        stack.extend(children.get(cur, []))
+    return False
+
+
+def ensure_agent(name: str) -> str | None:
+    """Make sure the agent runs in <name>:<window>. Session layout and command
+    are the same as in the `work` script, only without attaching a terminal.
+    Returns None or an error text."""
+    p = project(name)
+    if not p or p.get("terminal") is False:
+        return f"project '{name}' has no terminal"
+    root = p.get("root") or HOME
+    cmd = agent_cmd(p.get("claudeArgs") or "")
+    target = agent_target(name)
+
+    if pane_exists(target):
+        if agent_running(target):
+            return None
+        # window exists but the agent died into the fallback shell - respawn
+        _tmux("respawn-window", "-k", "-t", target, cmd)
+    elif _tmux("has-session", "-t", name).returncode == 0:
+        _tmux("new-window", "-t", name, "-n", AGENT_WINDOW, "-c", root, cmd)
+    else:
+        _tmux("new-session", "-d", "-s", name, "-n", AGENT_WINDOW, "-c", root, cmd)
+        _tmux("new-window", "-t", name, "-n", "shell", "-c", root)
+
+    deadline = time.monotonic() + 45
+    while time.monotonic() < deadline:
+        if agent_running(target):
+            time.sleep(3)   # the TUI needs a moment before it accepts input
+            return None
+        time.sleep(0.5)
+    return f"agent in session '{name}' did not start within 45 s"
+
+
+def agent_send(name: str, text: str) -> str | None:
+    """Paste text into the agent window and press Enter. None or error."""
+    err = ensure_agent(name)
+    if err:
+        return err
+    prefix = project(name).get("sendPrefix") or ""
+    r = _tmux("load-buffer", "-b", "fractal-send", "-", text_in=prefix + text.strip())
+    if r.returncode:
+        return "load-buffer failed: " + r.stderr.strip()
+    # -p = bracketed paste: newlines inside the text do NOT submit, Enter does
+    r = _tmux("paste-buffer", "-p", "-d", "-b", "fractal-send", "-t", agent_target(name))
+    if r.returncode:
+        return "paste-buffer failed: " + r.stderr.strip()
+    time.sleep(0.4)
+    _tmux("send-keys", "-t", agent_target(name), "Enter")
+    return None
+
+
+def run_query(jid: str, name: str, q: str) -> None:
+    """Own thread; the dashboard polls the result.
+
+    The answer is STREAMED: claude runs with stream-json output and every text
+    delta is appended to the job at once, so polling shows the answer while it
+    is being written. The final "result" event replaces the text with the
+    authoritative version."""
+    p = project(name)
+    root = p.get("root") or HOME
+    extra = shlex.split(p.get("claudeArgs") or "")
+    flags = shlex.split(CFG["FRACTAL_AGENT_FLAGS"])
+
+    def put(text: str, done: bool = False, okv: bool = False) -> None:
+        with _lock:
+            j = _qjobs.get(jid)
+            if j is None:
+                return
+            j["answer"] = text
+            if done:
+                j["done"], j["ok"], j["at"] = True, okv, time.time()
+
+    if CFG["FRACTAL_AGENT"] != "claude":
+        put("headless queries are only implemented for claude", done=True)
+        return
+    try:
+        # question on stdin, not as an argument: claudeArgs may hold variadic
+        # switches (--add-dir) that would swallow it. stderr to /dev/null - a
+        # full pipe would block claude.
+        proc = subprocess.Popen(
+            ["claude", "-p", "--output-format", "stream-json",
+             "--include-partial-messages", "--verbose", *flags, *extra],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, env=ENV, cwd=root)
+        proc.stdin.write(q)
+        proc.stdin.close()
+
+        deadline = time.monotonic() + QUERY_TIMEOUT
+        answer, new_block, got_result = "", False, False
+        for line in proc.stdout:
+            if time.monotonic() > deadline:
+                proc.kill()
+                put(f"no answer within {QUERY_TIMEOUT} s", done=True)
+                return
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            t = obj.get("type")
+            if t == "stream_event":
+                ev = obj.get("event") or {}
+                if ev.get("type") == "content_block_start" \
+                        and (ev.get("content_block") or {}).get("type") == "text":
+                    new_block = True
+                elif ev.get("type") == "content_block_delta":
+                    d = (ev.get("delta") or {}).get("text")     # thinking_delta has no text
+                    if d:
+                        if new_block and answer:
+                            answer += "\n\n"
+                        new_block = False
+                        answer += d
+                        put(answer)
+            elif t == "result":
+                got_result = True
+                final = (obj.get("result") or answer or "").strip()
+                ok = not obj.get("is_error") and bool(final)
+                put(final or "claude finished without an answer", done=True, okv=ok)
+
+        proc.wait(timeout=30)
+        if not got_result:
+            put((answer or f"claude failed (exit {proc.returncode})").strip(), done=True)
+    except Exception as e:                                    # noqa: BLE001
+        put(f"{type(e).__name__}: {e}", done=True)
+
+
+def run_hook(key: str, cmd: str, cwd: str) -> None:
+    """Run a registry hook to completion and record the outcome."""
+    t0 = time.monotonic()
+    try:
+        r = subprocess.run(shlex.split(cmd), capture_output=True, text=True,
+                           timeout=HOOK_TIMEOUT, env=ENV, cwd=cwd)
+        ok = r.returncode == 0
+        msg = "done" if ok else (r.stderr.strip() or r.stdout.strip()
+                                 or f"exit code {r.returncode}")[-400:]
+    except subprocess.TimeoutExpired:
+        ok, msg = False, f"did not finish within {HOOK_TIMEOUT} s"
+    except Exception as e:                                    # noqa: BLE001
+        ok, msg = False, f"{type(e).__name__}: {e}"
+    with _lock:
+        _hooks[key].update(running=False, ok=ok, msg=msg, at=time.time(),
+                           took=int(time.monotonic() - t0))
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "fractal-ctl"
+
+    def _send(self, code: int, payload: dict) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _json_body(self) -> dict | None:
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return None
+        if n <= 0 or n > MAX_TEXT:
+            return None
+        try:
+            return json.loads(self.rfile.read(n))
+        except Exception:                                     # noqa: BLE001
+            return None
+
+    def do_GET(self) -> None:
+        parts = [p for p in self.path.split("?")[0].split("/") if p]
+        try:
+            if not parts or parts == ["state"]:
+                self._send(200, {"projects": snapshot()})
+            elif len(parts) == 4 and parts[0] == "agent" and parts[2] == "query":
+                with _lock:
+                    j = _qjobs.get(parts[3])
+                self._send(404, {"error": "unknown query"}) if j is None else self._send(200, j)
+            elif len(parts) == 3 and parts[0] == "run":
+                with _lock:
+                    h = _hooks.get(f"{parts[1]}/{parts[2]}")
+                self._send(200, dict(h) if h else {"running": False, "ok": None, "msg": "", "at": 0, "took": 0})
+            else:
+                self._send(404, {"error": "unknown endpoint"})
+        except Exception as e:                                # noqa: BLE001
+            self._send(500, {"error": f"registry: {e}"})
+
+    def do_POST(self) -> None:
+        parts = [p for p in self.path.split("?")[0].split("/") if p]
+        try:
+            if len(parts) == 3 and parts[0] == "agent":
+                return self._agent(parts[1], parts[2])
+            if len(parts) == 3 and parts[0] == "run":
+                return self._run(parts[1], parts[2])
+            if len(parts) == 2:
+                return self._toggle(parts[0], parts[1])
+        except Exception as e:                                # noqa: BLE001
+            return self._send(500, {"error": f"registry: {e}"})
+        self._send(404, {"error": "expected /<project>/<start|stop>, /agent/<project>/<send|query> or /run/<project>/<hook>"})
+
+    def _agent(self, name: str, what: str) -> None:
+        if not project(name):
+            return self._send(404, {"error": f"unknown project '{name}'"})
+        body = self._json_body() or {}
+        if what == "send":
+            text = (body.get("text") or "").strip()
+            if not text:
+                return self._send(400, {"error": "empty text"})
+            err = agent_send(name, text)     # blocks up to ~50 s if the session must start
+            return self._send(500, {"error": err}) if err else self._send(200, {"ok": True})
+        if what == "query":
+            q = (body.get("q") or "").strip()
+            if not q:
+                return self._send(400, {"error": "empty question"})
+            jid = uuid.uuid4().hex[:12]
+            now = time.time()
+            with _lock:
+                for k in [k for k, v in _qjobs.items() if v.get("done") and now - v["at"] > 3600]:
+                    _qjobs.pop(k)                             # nobody collects hour-old jobs
+                _qjobs[jid] = {"done": False, "ok": None, "answer": "", "at": now}
+            threading.Thread(target=run_query, args=(jid, name, q), daemon=True).start()
+            return self._send(202, {"id": jid})
+        self._send(404, {"error": "agent verb must be send or query"})
+
+    def _run(self, name: str, hook: str) -> None:
+        p = project(name)
+        cmd = (p.get("hooks") or {}).get(hook)
+        if not cmd:
+            # unknown project or hook - either way nothing is executed
+            return self._send(404, {"error": f"project '{name}' has no hook '{hook}'"})
+        key = f"{name}/{hook}"
+        with _lock:
+            if _hooks.get(key, {}).get("running"):
+                return self._send(409, {"error": "already running"})
+            _hooks[key] = {"running": True, "ok": None, "msg": "", "at": time.time(), "took": 0}
+        threading.Thread(target=run_hook, args=(key, cmd, p.get("root") or HOME), daemon=True).start()
+        self._send(202, {"ok": True})
+
+    def _toggle(self, name: str, action: str) -> None:
+        if action not in ("start", "stop"):
+            return self._send(400, {"error": "action must be start or stop"})
+        svc = services().get(name)
+        if not svc:
+            # unknown project or one without "service" - nothing runs either way
+            return self._send(404, {"error": f"project '{name}' cannot be controlled"})
+        with _lock:
+            if name in _busy:
+                return self._send(409, {"error": f"{_busy[name]['action']} already in progress"})
+            _busy[name] = {"action": action, "since": time.time()}
+        remember(name, action)
+        threading.Thread(target=run_action,
+                         args=(name, action, svc[action], svc["probe"]), daemon=True).start()
+        self._send(202, {"ok": True, "project": name, "action": action})
+
+    def log_message(self, fmt: str, *a) -> None:
+        if self.command != "GET":          # the journal deserves actions, not every poll
+            super().log_message(fmt, *a)
+
+
+if __name__ == "__main__":
+    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

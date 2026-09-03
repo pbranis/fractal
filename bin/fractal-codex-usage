@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""fractal-codex-usage - writes the Codex rate limits to
+$FRACTAL_WWW/codex-usage.json for the dashboard meters. Optional.
+
+Data comes from the Codex app-server via "account/rateLimits/read". It is a
+READ request - no model run, no quota, no tokens. Login is handled by codex
+itself in ~/.codex/auth.json; this script only uses it.
+
+The protocol is line-delimited JSON-RPC on stdin/stdout (NOT LSP framing with
+Content-Length - the server rejects that). Stdin must stay open until the
+answer arrives; on EOF the server exits before it can reply.
+
+Runs from the systemd user timer fractal-codex-usage.timer every 5 minutes.
+On error the old file is NOT overwritten - the dashboard detects stale data
+from "fetched".
+"""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timezone
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+from fractal_config import WWW, bin_path_env  # noqa: E402
+
+os.environ.update(PATH=bin_path_env()["PATH"])      # codex lives in ~/.local/bin
+OUT = os.path.join(WWW, "codex-usage.json")
+TIMEOUT = 40
+
+
+def fail(msg):
+    print("fractal-codex-usage: " + msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def read_rate_limits():
+    p = subprocess.Popen(["codex", "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, text=True, bufsize=1)
+    try:
+        def send(obj):
+            p.stdin.write(json.dumps(obj) + "\n")
+            p.stdin.flush()
+
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "clientInfo": {"name": "fractal-usage", "version": "1.0"},
+            "capabilities": {"experimentalApi": True}}})
+
+        deadline = time.time() + TIMEOUT
+        asked = False
+        while time.time() < deadline:
+            line = p.stdout.readline()
+            if not line:
+                break
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue          # notifications we do not care about
+            if msg.get("id") == 1 and not asked:
+                send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+                send({"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read", "params": {}})
+                asked = True
+            elif msg.get("id") == 2:
+                if "error" in msg:
+                    fail("app-server returned an error: %s" % msg["error"])
+                return msg.get("result", {})
+        fail("app-server did not answer within %d s" % TIMEOUT)
+    finally:
+        p.kill()
+        p.wait(timeout=5)
+
+
+def window(w, kind):
+    """RateLimitWindow -> dashboard item. The window length names the meter,
+    so nothing is guessed from ordering (primary is not always weekly)."""
+    if not w:
+        return None
+    resets = w.get("resetsAt")
+    return {"kind": kind, "percent": w.get("usedPercent", 0), "window_mins": w.get("windowDurationMins"),
+            "resets_at": datetime.fromtimestamp(resets, timezone.utc).isoformat() if resets else None}
+
+
+def main():
+    res = read_rate_limits()
+    rl = res.get("rateLimits") or {}
+    limits = [x for x in (window(rl.get("primary"), "primary"), window(rl.get("secondary"), "secondary")) if x]
+    if not limits:
+        fail("answer contains no rate limit window")
+
+    credits = rl.get("credits") or {}
+    doc = {
+        "fetched": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "plan": rl.get("planType"),
+        "limits": limits,
+        "credits": ({"balance": credits.get("balance"), "unlimited": credits.get("unlimited")}
+                    if credits.get("hasCredits") or credits.get("unlimited") else None),
+    }
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(OUT), prefix=".codex-usage.")
+    with os.fdopen(fd, "w") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=2)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, OUT)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,7 @@
+[Unit]
+Description=fractal: write status.json for the Machine card
+
+[Service]
+Type=oneshot
+ExecStart=${HOME}/.local/bin/fractal-status
+Environment=PATH=${HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

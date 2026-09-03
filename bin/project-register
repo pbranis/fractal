@@ -1,0 +1,380 @@
+#!/usr/bin/env python3
+"""project-register - add, edit and remove projects in the fractal registry.
+
+The registry ($FRACTAL_WWW/projects.json) is the single source of truth: the
+dashboard, the `work` switcher, the browser terminal, fractal-ctl and the
+autostart memory all read it. Writing here wires a project in everywhere at
+once - no HTML edits, no nginx changes, no root (the file belongs to you).
+
+    project-register list
+    project-register add <name> --root <dir> [--title ...] [--desc ...]
+                     [--group "Tab"] [--ctl "cmd"] [--claude-args "..."]
+                     [--no-terminal] [--pinned] [--send-prefix "/cmd "]
+                     [--link "Label:PORT:/path[:note]"]...
+                     [--service-start "cmd" --service-stop "cmd" --probe PORT]
+                     [--hook NAME="cmd"]... [--action "Label:hook"]...
+                     [--autostart]
+    project-register edit <name> [same flags; --add-link, --clear-links]
+    project-register remove <name>
+    project-register group <name> <tab>        move a project to another tab
+    project-register groups [--order "A,B,C"]  list / reorder tabs
+
+Example:
+    project-register add myweb --root ~/projects/myweb \\
+      --title "My web" --group "Personal" \\
+      --desc 'control with <code>myweb start|stop</code>' \\
+      --ctl "myweb start" --link "Web:5000:/" \\
+      --service-start "myweb start" --service-stop "myweb stop" --probe 5000 \\
+      --autostart
+
+Fields:
+  ctl          command `work <name>` runs before attaching (usually "<name> start")
+  service      start/stop commands for the dashboard switch; "probe" is the port
+               the application itself listens on (not an nginx proxy port)
+  autostart    creates and enables a systemd user unit <name>.service that runs
+               service.start; fractal-autostart decides at boot whether to start it
+  links        rows on the card; empty PORT = same origin as the dashboard
+  pinned       rendered as a highlighted section above the tabs
+  sendPrefix   text prepended to whatever the dashboard sends to the agent window
+  hooks        named commands the dashboard may run (buttons via "actions")
+  actions      [{"name": "Label", "hook": "name"}] buttons on a pinned card
+
+Tabs: order is the "groups" key in the registry, membership the "group" field.
+A project with an unknown group lands in the "Other" tab at the end, so it
+never disappears.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+from fractal_config import HOME, REGISTRY, URL  # noqa: E402
+
+UNIT_DIR = os.path.expanduser("~/.config/systemd/user")
+NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}$")
+
+
+def load():
+    try:
+        with open(REGISTRY, encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return {"groups": [], "projects": []}
+
+
+def save(reg):
+    # atomic - a half-written registry would render an empty dashboard
+    d = os.path.dirname(REGISTRY)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".projects.", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(reg, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+        os.chmod(tmp, 0o664)
+        os.replace(tmp, REGISTRY)
+    except BaseException:
+        os.path.exists(tmp) and os.unlink(tmp)
+        raise
+
+
+def find(reg, name):
+    for p in reg["projects"]:
+        if p["name"] == name:
+            return p
+    sys.exit(f"project '{name}' is not in the registry")
+
+
+def parse_link(spec):
+    """"Label:PORT:/path[:note]"; empty PORT = same origin."""
+    parts = spec.split(":")
+    if len(parts) < 3:
+        sys.exit(f"bad --link '{spec}' (expected Label:PORT:/path[:note])")
+    name, port, path = parts[0], parts[1], parts[2]
+    note = ":".join(parts[3:]) if len(parts) > 3 else ""
+    return {"name": name, "port": int(port) if port else None, "path": path, "note": note}
+
+
+def parse_hook(spec):
+    if "=" not in spec:
+        sys.exit(f"bad --hook '{spec}' (expected NAME=command)")
+    k, v = spec.split("=", 1)
+    return k.strip(), v.strip()
+
+
+def parse_action(spec):
+    if ":" not in spec:
+        sys.exit(f"bad --action '{spec}' (expected Label:hook)")
+    label, hook = spec.rsplit(":", 1)
+    return {"name": label, "hook": hook}
+
+
+def systemd(*args):
+    env = dict(os.environ, XDG_RUNTIME_DIR=f"/run/user/{os.getuid()}")
+    return subprocess.run(["systemctl", "--user", *args], env=env, capture_output=True, text=True)
+
+
+def write_unit(entry):
+    """Systemd user unit that starts the project's stack. It is NOT wanted by
+    default.target: fractal-autostart starts it at boot only if the project
+    was running before the shutdown."""
+    svc = entry.get("service") or {}
+    if not svc.get("start"):
+        sys.exit("--autostart needs --service-start")
+    unit = os.path.join(UNIT_DIR, f"{entry['name']}.service")
+    stop = f"ExecStop=/bin/bash -lc '{svc['stop']}'\n" if svc.get("stop") else ""
+    os.makedirs(UNIT_DIR, exist_ok=True)
+    with open(unit, "w", encoding="utf-8") as fh:
+        fh.write(f"""[Unit]
+Description={entry['title']} - dev stack (tmux session "{entry['name']}")
+After=default.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The tmux server daemonizes into the cgroup of whichever unit created it
+# first; KillMode=process makes sure stopping one unit does not take the
+# other projects' windows down with it.
+KillMode=process
+WorkingDirectory={entry['root']}
+Environment=PATH={HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/bin/bash -lc '{svc['start']}'
+{stop}TimeoutStartSec=300
+
+""")
+    systemd("daemon-reload")
+    # Deliberately not enabled: a loaded unit is enough for `systemctl --user
+    # start/stop`, and fractal-autostart is what starts it at boot.
+    print(f"autostart: {unit} written (started at boot by fractal-autostart)")
+
+
+def apply_flags(entry, a, adding):
+    """Shared between add and edit."""
+    if a.title is not None:
+        entry["title"] = a.title
+    if a.group is not None:
+        entry["group"] = a.group
+    if a.desc is not None:
+        entry["desc"] = a.desc
+    if a.ctl is not None:
+        entry["ctl"] = a.ctl
+    if a.claude_args is not None:
+        entry["claudeArgs"] = a.claude_args
+    if a.no_terminal:
+        entry["terminal"] = False
+    if getattr(a, "terminal", False):
+        entry["terminal"] = True
+    if a.pinned:
+        entry["pinned"] = True
+    if getattr(a, "unpin", False):
+        entry.pop("pinned", None)
+    if a.send_prefix is not None:
+        entry["sendPrefix"] = a.send_prefix
+    if getattr(a, "clear_links", False):
+        entry["links"] = []
+    links = (a.link or []) if adding else (a.add_link or [])
+    for s in links:
+        entry.setdefault("links", []).append(parse_link(s))
+    if a.service_start or a.service_stop or a.probe:
+        svc = entry.setdefault("service", {})
+        if a.service_start:
+            svc["start"] = a.service_start
+        if a.service_stop:
+            svc["stop"] = a.service_stop
+        if a.probe:
+            svc["probe"] = a.probe
+    for h in a.hook or []:
+        k, v = parse_hook(h)
+        entry.setdefault("hooks", {})[k] = v
+    for s in a.action or []:
+        entry.setdefault("actions", []).append(parse_action(s))
+    return entry
+
+
+def ensure_group(reg, group):
+    if group and group not in reg.setdefault("groups", []):
+        reg["groups"].append(group)
+        print(f"registry: tab '{group}' appended")
+
+
+def cmd_list(_):
+    reg = load()
+    if not reg.get("projects"):
+        print("the registry is empty")
+        return
+    for p in reg["projects"]:
+        term = "/term/?arg=" + p["name"] if p.get("terminal", True) else "-"
+        flags = " ".join(f for f, on in (("pinned", p.get("pinned")), ("service", p.get("service")),
+                                          ("hooks", p.get("hooks"))) if on)
+        print(f'{p["name"]:<14} {p.get("title", ""):<28} {p["root"]}')
+        print(f'{"":<14} tab: {p.get("group") or "-":<22} links: {len(p.get("links", []))}'
+              f'   terminal: {term}   {flags}')
+
+
+def cmd_group(a):
+    reg = load()
+    p = find(reg, a.name)
+    p["group"] = a.group
+    ensure_group(reg, a.group)
+    save(reg)
+    print(f"registry: '{a.name}' -> tab '{a.group}'")
+
+
+def cmd_groups(a):
+    reg = load()
+    groups = reg.get("groups", [])
+    if a.order:
+        new = [g.strip() for g in a.order.split(",") if g.strip()]
+        # only an empty tab may be dropped; otherwise projects would silently
+        # fall into "Other" and you would only notice on the dashboard
+        used = {p.get("group") for p in reg["projects"]}
+        missing = [g for g in groups if g not in new and g in used]
+        if missing:
+            sys.exit(f"--order is missing tabs that still have projects: {', '.join(missing)}")
+        reg["groups"] = new
+        save(reg)
+        groups = new
+        print("registry: tab order saved")
+    for g in groups:
+        n = sum(1 for p in reg["projects"] if p.get("group") == g)
+        print(f"  {g}  ({n})")
+    orphans = [p["name"] for p in reg["projects"] if p.get("group") not in groups]
+    if orphans:
+        print(f"  Other  ({len(orphans)}): {', '.join(orphans)}")
+
+
+def hints(name):
+    print()
+    print(f"  dashboard:  {URL}  (reload the page)")
+    print(f"  terminal:   {URL}term/?arg={name}")
+    print(f"  from SSH:   work {name}")
+
+
+def cmd_add(a):
+    if not NAME_RE.match(a.name):
+        sys.exit("name may only contain lowercase letters, digits and dashes")
+    root = os.path.abspath(os.path.expanduser(a.root))
+    if not os.path.isdir(root):
+        sys.exit(f"directory does not exist: {root}")
+
+    reg = load()
+    if any(p["name"] == a.name for p in reg.setdefault("projects", [])):
+        sys.exit(f"project '{a.name}' is already registered (use edit or remove)")
+
+    entry = {"name": a.name, "title": a.name, "group": "", "root": root, "desc": "",
+             "ctl": "", "claudeArgs": "", "terminal": True, "links": []}
+    apply_flags(entry, a, adding=True)
+    ensure_group(reg, entry["group"])
+    reg["projects"].append(entry)
+    save(reg)
+    grp = f", tab '{entry['group']}'" if entry["group"] else ", no tab -> Other"
+    print(f"registry: added '{a.name}' ({len(entry['links'])} links{grp})")
+    if a.autostart:
+        write_unit(entry)
+    hints(a.name)
+
+
+def cmd_edit(a):
+    reg = load()
+    entry = find(reg, a.name)
+    if a.root:
+        root = os.path.abspath(os.path.expanduser(a.root))
+        if not os.path.isdir(root):
+            sys.exit(f"directory does not exist: {root}")
+        entry["root"] = root
+    apply_flags(entry, a, adding=False)
+    ensure_group(reg, entry.get("group"))
+    save(reg)
+    print(f"registry: '{a.name}' updated")
+    if a.autostart:
+        write_unit(entry)
+
+
+def cmd_remove(a):
+    reg = load()
+    before = len(reg["projects"])
+    reg["projects"] = [p for p in reg["projects"] if p["name"] != a.name]
+    if len(reg["projects"]) == before:
+        sys.exit(f"project '{a.name}' is not in the registry")
+    save(reg)
+    print(f"registry: removed '{a.name}'")
+    unit = os.path.join(UNIT_DIR, f"{a.name}.service")
+    if os.path.exists(unit):
+        systemd("disable", "--now", f"{a.name}.service")
+        os.unlink(unit)
+        systemd("daemon-reload")
+        print(f"autostart: {unit} removed")
+    # the tmux session is deliberately left alone - services may run in it and
+    # killing them as a side effect of "remove" would be a surprise
+    r = subprocess.run(["tmux", "has-session", "-t", a.name], capture_output=True, text=True)
+    if r.returncode == 0:
+        print(f"note: tmux session '{a.name}' is still running (tmux kill-session -t {a.name})")
+
+
+def common_flags(p, adding):
+    p.add_argument("--title")
+    p.add_argument("--group", help="tab on the dashboard")
+    p.add_argument("--desc", help="may contain HTML, e.g. <code>...</code>")
+    p.add_argument("--ctl", help="command `work` runs before attaching")
+    p.add_argument("--claude-args", help="extra agent switches, e.g. --add-dir ...")
+    p.add_argument("--no-terminal", action="store_true")
+    p.add_argument("--pinned", action="store_true", help="highlighted section above the tabs")
+    p.add_argument("--send-prefix", help="prepended to text sent to the agent window")
+    p.add_argument("--service-start")
+    p.add_argument("--service-stop")
+    p.add_argument("--probe", type=int, help="port the application itself listens on")
+    p.add_argument("--hook", action="append", help="NAME=command")
+    p.add_argument("--action", action="append", help="Label:hook (button on a pinned card)")
+    p.add_argument("--autostart", action="store_true", help="write a systemd user unit")
+    if adding:
+        p.add_argument("--link", action="append", help="Label:PORT:/path[:note]")
+    else:
+        p.add_argument("--add-link", action="append", help="Label:PORT:/path[:note]")
+        p.add_argument("--clear-links", action="store_true")
+        p.add_argument("--terminal", action="store_true")
+        p.add_argument("--unpin", action="store_true")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("list").set_defaults(func=cmd_list)
+
+    p = sub.add_parser("add")
+    p.add_argument("name")
+    p.add_argument("--root", required=True)
+    common_flags(p, adding=True)
+    p.set_defaults(func=cmd_add)
+
+    e = sub.add_parser("edit")
+    e.add_argument("name")
+    e.add_argument("--root")
+    common_flags(e, adding=False)
+    e.set_defaults(func=cmd_edit)
+
+    r = sub.add_parser("remove")
+    r.add_argument("name")
+    r.set_defaults(func=cmd_remove)
+
+    g = sub.add_parser("group")
+    g.add_argument("name")
+    g.add_argument("group")
+    g.set_defaults(func=cmd_group)
+
+    gs = sub.add_parser("groups")
+    gs.add_argument("--order", help="new tab order, e.g. \"Personal,Work\"")
+    gs.set_defaults(func=cmd_groups)
+
+    argv = sys.argv[1:]
+    if argv and argv[0] in ("--list", "-l"):       # shortcut kept for muscle memory
+        argv = ["list"]
+    a = ap.parse_args(argv)
+    a.func(a)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,4 @@
+#!/bin/bash
+# codexs - codex bez ptani, ale v sandboxu: zapis jen do pracovniho adresare.
+# Claude tenhle mezistupen nema; na fractalu je to rozumny vychozi rezim.
+exec codex -s workspace-write -a never --search "$@"

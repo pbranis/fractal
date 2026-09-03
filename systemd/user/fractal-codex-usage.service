@@ -1,0 +1,8 @@
+[Unit]
+Description=fractal: Codex usage limits for the dashboard (optional)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${HOME}/.local/bin/fractal-codex-usage
+Environment=PATH=${HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

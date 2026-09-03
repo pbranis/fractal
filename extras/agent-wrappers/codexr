@@ -1,0 +1,3 @@
+#!/bin/bash
+# codexr - nabidne vyber ze ulozenych sezeni (protejsek "clauder").
+exec codex resume --dangerously-bypass-approvals-and-sandbox --search "$@"

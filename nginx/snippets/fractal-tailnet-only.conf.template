@@ -1,0 +1,7 @@
+# Access only from the tailnet. Included in location blocks that expose a
+# shell or personal content. The LAN deliberately has no access here.
+# Rendered from FRACTAL_ALLOW in fractal.env by install.sh.
+${FRACTAL_ALLOW_LINES}
+allow 127.0.0.1;
+deny all;
+error_page 403 = @fractal_tailnet_only;

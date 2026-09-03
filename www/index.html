@@ -1,0 +1,1539 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fractal — rozcestník</title>
+<style>
+  :root{
+    --bg:#f9f9f7; --card:#fcfcfb; --border:#e1e0d9; --track:#e1e0d9;
+    --text:#0b0b0b; --text2:#52514e; --muted:#898781;
+    --accent:#2a78d6; --chip:#f0efec;
+    /* status paleta - pevna, netematizuje se */
+    --good:#0ca30c; --warn:#fab219; --crit:#d03b3b;
+    /* usage metry Claude maji znackovou oranzovou; stupen zaplneni nese
+       slovni stav vedle procent, ne barva */
+    --claude:#d97757;
+    /* Codex ma vlastni odstin, at se metry obou nastroju nepletou */
+    --codex:#10a37f;
+    /* pripnute projekty maji vlastni odstin, aby sekce nesplyvala se zbytkem */
+    --pin:#7c46c8; --pin-soft:#f4eefc; --pin-line:#d9c8f2; --pin-on:#ffffff;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0d0d0d; --card:#1a1a19; --border:#2c2c2a; --track:#2c2c2a;
+      --text:#ffffff; --text2:#c3c2b7; --muted:#898781;
+      --accent:#3987e5; --chip:#232321; --codex:#2bb894;
+      --pin:#b18cf0; --pin-soft:#1d1830; --pin-line:#3a2f57; --pin-on:#140f22;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0d0d0d; --card:#1a1a19; --border:#2c2c2a; --track:#2c2c2a;
+    --text:#ffffff; --text2:#c3c2b7; --muted:#898781;
+    --accent:#3987e5; --chip:#232321; --codex:#2bb894;
+    --pin:#b18cf0; --pin-soft:#1d1830; --pin-line:#3a2f57; --pin-on:#140f22;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+    padding:32px 20px 64px;
+  }
+  /* Na desktopu stranka vyplni cely viewport; jen okraje trochu povyrostou.
+     Na mobilu zustava 20px. */
+  @media (min-width:900px){ body{padding:32px 36px 64px} }
+  .wrap{max-width:none;margin:0 auto}
+  /* Horni rada: Stroj + pripnute projekty. Do 1400px pod sebou, na sirokem
+     monitoru vedle sebe (Stroj sirsi, ma vic obsahu). Bez pripnuteho projektu
+     zabere Stroj celou sirku. */
+  .toprow{display:grid;gap:18px}
+  .toprow .pinned{margin-top:0}
+  #pinned{display:grid;gap:18px}
+  #pinned:empty{display:none}
+  @media (min-width:1400px){
+    .toprow{grid-template-columns:minmax(0,1fr) 300px;align-items:start}
+    .toprow:has(#pinned:empty){grid-template-columns:1fr}
+    /* v uzkem sloupci jdou akce pripnuteho projektu pod sebe, zarovnane doleva */
+    .toprow .pin-actions{grid-template-columns:1fr;gap:8px}
+    .toprow .pin-actions .term{justify-content:flex-start;padding:8px 12px}
+  }
+  footer code{background:var(--chip);padding:1px 6px;border-radius:5px;font-size:13px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px}
+  .card h2{margin:0 0 2px;font-size:17px}
+  .card .desc{color:var(--text2);font-size:13px;margin-bottom:14px}
+
+  /* ---- hlavicka karty s vypinacem ---- */
+  .cardhead{display:flex;align-items:center;gap:12px;margin-bottom:2px}
+  .cardhead h2{margin:0;flex:1;min-width:0}
+
+  /* Prepinac ve stylu iOS. Stav nenese jen barva, ale hlavne POLOHA knofliku
+     (vlevo/vpravo) - to je citelne i bez barvocitu. Popisek vedle nej rika
+     stav slovy, at se na tvar nemusi spolehat vubec. */
+  .sw{position:relative;flex:0 0 auto;width:51px;height:31px;padding:0;
+      appearance:none;border:0;border-radius:31px;background:var(--track);
+      cursor:pointer;transition:background .25s ease}
+  .sw::after{content:"";position:absolute;top:2px;left:2px;width:27px;height:27px;
+             border-radius:50%;background:#fff;
+             box-shadow:0 3px 8px rgba(0,0,0,.15),0 1px 1px rgba(0,0,0,.16);
+             transition:transform .25s cubic-bezier(.4,.1,.25,1)}
+  .sw[aria-checked="true"]{background:var(--good)}
+  .sw[aria-checked="true"]::after{transform:translateX(20px)}
+  .sw:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+  .sw[disabled]{cursor:progress;opacity:.6}
+  /* behem start/stop knoflik decentne pulzuje, aby bylo videt, ze se ceka */
+  .sw.busy::after{animation:swpulse 1s ease-in-out infinite}
+  @keyframes swpulse{50%{opacity:.55}}
+  @media (prefers-reduced-motion:reduce){
+    .sw::after{transition:none} .sw.busy::after{animation:none}
+  }
+  .swlbl{font-size:12px;color:var(--muted);flex:0 0 auto;
+         font-variant-numeric:tabular-nums}
+  /* chyba ze start/stop - tise spadnout pod stul by bylo horsi nez ji ukazat */
+  .swerr{margin:0 0 12px;padding:8px 10px;border-radius:7px;font-size:12.5px;
+         background:var(--chip);color:var(--crit);white-space:pre-wrap;
+         overflow-wrap:anywhere}
+  .swerr:empty{display:none}
+  .grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));margin-top:18px}
+
+  /* ---- zalozky skupin ---- */
+  /* Vodorovny pruh nad mrizkou; aktivni zalozka je podtrzena akcentem, takze
+     vyber nenese jen barva, ale i tvar - citelne i pri poruse barvocitu. */
+  .tabs{display:flex;flex-wrap:wrap;gap:4px;margin:26px 0 0;
+        border-bottom:1px solid var(--border)}
+  .tab{appearance:none;background:none;border:0;cursor:pointer;
+       font:inherit;font-size:14px;color:var(--text2);
+       padding:9px 14px;border-bottom:2px solid transparent;margin-bottom:-1px;
+       border-radius:7px 7px 0 0;transition:color .15s,background .15s}
+  .tab:hover{color:var(--text);background:var(--chip)}
+  .tab[aria-selected="true"]{color:var(--text);font-weight:600;border-bottom-color:var(--accent)}
+  .tab:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .tab .count{color:var(--muted);font-size:12px;font-weight:400;margin-left:6px;
+              font-variant-numeric:tabular-nums}
+
+  /* ---- stroj ---- */
+  /* Na desktopu karta nadpis nema - dlazdice mluvi samy za sebe.
+     Na mobilu je nadpis potreba jako rozbalovaci hlavicka. */
+  .machine h2{display:none;align-items:baseline;gap:10px}
+  .machine .chev{display:none}
+  .mach-mini{display:none}
+
+  /* Na mobilu je sekce sbalena do hlavicky s jednoradkovym souhrnem;
+     obsah se ukaze az po tuknuti. Na desktopu se nemeni nic. */
+  @media (max-width:720px){
+    .machine h2{display:flex;cursor:pointer;margin:0;-webkit-user-select:none;user-select:none}
+    .machine .chev{display:inline-block;margin-left:auto;color:var(--muted);
+                   font-size:14px;transition:transform .2s}
+    .machine.open .chev{transform:rotate(90deg)}
+    .machine:not(.open) .mach-mini{display:block;color:var(--text2);
+                                   font-size:12.5px;margin-top:6px;
+                                   font-variant-numeric:tabular-nums}
+    .machine .tiles,.machine .meters,.machine .sysmeta,.machine .dock,
+    .machine .actions,.machine .pref,.machine .queue{display:none}
+    .machine.open .dock{display:block}
+    .machine.open .tiles{display:grid}
+    .machine.open .meters{display:grid}
+    .machine.open .sysmeta{display:flex}
+    .machine.open .actions{display:grid}
+    .machine.open .pref{display:flex}
+    .machine.open .queue{display:block}
+    .machine.open .queue:empty{display:none}
+  }
+  .tiles{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin:0 0 4px}
+  @media (max-width:720px){ .machine.open .tiles{margin-top:16px} }
+  .tile{padding:2px 0}
+  .tile .lbl{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  .tile .val{font-size:26px;line-height:1.15;margin-top:2px}
+  .tile .val .unit{font-size:14px;color:var(--text2);margin-left:2px}
+  .tile .note{font-size:12px;color:var(--text2);margin-top:1px}
+
+  .meters{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-top:18px}
+  .meter .top{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
+  .meter .name{font-size:13px;color:var(--text2)}
+  .meter .num{margin-left:auto;font-size:13px;font-variant-numeric:tabular-nums}
+  .meter .state{font-size:12px;padding:0 6px;border-radius:4px;background:var(--chip);color:var(--text2)}
+  /* stopa je recesivni, vypln ma zaobleny konec ukotveny na zacatku */
+  .track{height:8px;background:var(--track);border-radius:4px;overflow:hidden}
+  .fill{height:100%;border-radius:4px;transition:width .4s ease}
+
+  .sysmeta{margin-top:18px;padding-top:14px;border-top:1px solid var(--border);
+           color:var(--text2);font-size:12.5px;display:flex;flex-wrap:wrap;gap:6px 18px}
+
+  /* ---- kontejnery (docker) ---- */
+  /* Sbaleny radek s poctem; sipka meni tvar pri rozbaleni. Kdyz neco nebezi,
+     radek to rekne slovy - ne jen barvou. */
+  .dock{margin-top:8px;font-size:12.5px;color:var(--text2)}
+  .dock summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:7px;
+                padding:4px 0;-webkit-user-select:none;user-select:none;width:max-content;
+                border-radius:5px}
+  .dock summary::-webkit-details-marker{display:none}
+  .dock summary::before{content:"▸";color:var(--muted);font-size:11px;transition:transform .15s}
+  .dock[open] summary::before{transform:rotate(90deg)}
+  .dock summary:hover{color:var(--text)}
+  .dock summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .dock.warn summary{color:var(--crit)}
+  .dock-wrap{overflow-x:auto;margin-top:6px}
+  .docktab{border-collapse:collapse;width:100%;font-size:13px;color:var(--text)}
+  .docktab th{text-align:left;font-weight:500;color:var(--muted);font-size:11.5px;
+              text-transform:uppercase;letter-spacing:.04em;padding:4px 10px 6px 0;
+              border-bottom:1px solid var(--border);white-space:nowrap}
+  .docktab td{padding:5px 10px 5px 0;border-bottom:1px solid var(--border);
+              white-space:nowrap;vertical-align:middle}
+  .docktab tr:last-child td{border-bottom:0}
+  .docktab td:first-child,.docktab th:first-child{width:14px;padding-right:6px}
+  .docktab .dot{display:inline-block;vertical-align:middle}
+  .docktab .nm{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+  .docktab .since,.docktab .hl{color:var(--text2)}
+  .docktab .hl.bad{color:var(--crit);font-weight:500}
+
+  /* ---- sluzby ---- */
+  ul{list-style:none;margin:0;padding:0}
+  li{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--border)}
+  li:first-child{border-top:0}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:0 0 auto;transition:background .2s}
+  .dot.up{background:var(--good)} .dot.down{background:var(--crit)}
+  a.svc{color:var(--accent);text-decoration:none;font-weight:500}
+  a.svc:hover{text-decoration:underline}
+  .meta{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .port{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+  .note{color:var(--muted);font-size:12px}
+  /* tlacitko terminalu - posledni prvek karty, at je vzdy na stejnem miste */
+  .term{display:flex;align-items:center;justify-content:center;gap:8px;
+        margin-top:14px;padding:9px 12px;border:1px solid var(--accent);
+        border-radius:8px;color:var(--accent);text-decoration:none;
+        font-size:13.5px;font-weight:500}
+  .term:hover{background:var(--accent);color:var(--card)}
+  .term .hint{font-weight:400;opacity:.75;font-size:12px}
+  /* Terminal v hlavicce karty projektu: plna vypln, at je videt na prvni
+     pohled; kompaktni, aby se vesel vedle nazvu i prepinace. */
+  .termtop{margin:0;flex:0 0 auto;padding:7px 14px;font-size:13.5px;font-weight:600;
+           background:var(--accent);color:#fff;border-color:var(--accent);
+           box-shadow:0 1px 2px rgba(0,0,0,.12)}
+  .termtop:hover{background:var(--text);border-color:var(--text);color:var(--bg)}
+  .termtop:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+  footer{margin-top:24px;color:var(--text2);font-size:12.5px}
+
+  /* ---- akce stroje: terminal + nahravani ---- */
+  /* Terminal si drzi svoji sirku, zona pro soubory zabere zbytek radku.
+     Na uzkem displeji se to slozi pod sebe. */
+  .actions{display:grid;gap:12px;grid-template-columns:auto 1fr;
+           align-items:stretch;margin-top:14px}
+  .actions .term{margin-top:0}
+  @media (max-width:640px){ .actions{grid-template-columns:1fr} }
+
+  .drop{display:flex;align-items:center;justify-content:center;gap:8px;
+        padding:9px 12px;border:1px dashed var(--border);border-radius:8px;
+        color:var(--text2);font-size:13.5px;text-align:center;cursor:pointer;
+        background:none;font-family:inherit;width:100%;
+        transition:border-color .15s,color .15s,background .15s}
+  .drop:hover{border-color:var(--accent);color:var(--text)}
+  .drop:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  /* pri tazeni souboru nad strankou je zona zvyraznena plnou linkou, aby bylo
+     videt, kam to spadne - meni se tvar ramecku, ne jen barva */
+  .drop.over{border-style:solid;border-color:var(--accent);color:var(--accent);
+             background:var(--chip)}
+  .drop .hint{opacity:.75;font-size:12px}
+
+  /* ---- predvolba: ovladaci tlacitka v terminalech ---- */
+  /* Radek pod akcemi stroje; prepinac je stejny jako u projektu, jen misto
+     start/stop meni localStorage["fractal-termkeys"], ktere ctou terminaly
+     (stejny origin => sdilene localStorage, zmena se projevi i v uz
+     otevrenych terminalech pres "storage" event). */
+  .pref{display:flex;align-items:center;gap:12px;margin-top:14px;
+        padding-top:12px;border-top:1px solid var(--border)}
+  .pref .preftxt{flex:1;min-width:0;font-size:13.5px}
+  .pref .preftxt .note{display:block}
+
+  /* ---- pripnute projekty ---- */
+  /* Vlastni sekce vedle Stroje pro projekty s "pinned": true v registru -
+     chodi se do nich kazdy den, tak at se na ne neklika pres zalozku. */
+  /* Odliseni nestoji jen na barve: sekce ma i vlastni podklad, silnejsi levou
+     hranu a vetsi nadpis, takze je jina i pri poruse barvocitu nebo v tisku. */
+  .pinned{margin-top:18px;background:var(--pin-soft);
+       border-color:var(--pin-line);border-left:4px solid var(--pin)}
+  .pinned h2{font-size:19px;display:flex;align-items:center;gap:9px}
+  .pinned h2::before{content:"◆";color:var(--pin);font-size:14px;line-height:1}
+  .pinned .desc{margin-bottom:0}
+  .pinned .desc code{background:var(--card);padding:1px 6px;border-radius:5px;font-size:12.5px}
+  /* akce v jednom radku; na uzkem displeji se zalamuji */
+  .pin-actions{display:grid;gap:10px;margin-top:16px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}
+  .hookrow{margin-top:10px;min-height:18px}
+  .hookrow .st{font-size:12.5px;color:var(--text2)}
+  .hookrow .st.err{color:var(--crit)}
+  .hookrow .st.ok{color:var(--pin)}
+  @media (max-width:720px){
+    .pin-actions{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  }
+  .pin-actions .term{margin-top:0;border-color:var(--pin);color:var(--pin);
+                     background:var(--card)}
+  .pin-actions .term:hover{background:var(--pin);color:var(--pin-on)}
+  /* tlacitka v pin-actions jsou i <button> (send, query, hooky) - srovnat s <a> */
+  .pin-actions button.term{appearance:none;font-family:inherit;cursor:pointer}
+
+  /* ---- poslat agentovi / zeptat se ---- */
+  /* Rozbalovaci box pod akcemi pripnuteho projektu; otevreny je nejvys jeden. */
+  .pinbox{display:none;margin-top:14px}
+  .pinbox.open{display:block}
+  .pinbox textarea{width:100%;min-height:76px;resize:vertical;padding:9px 11px;
+    border:1px solid var(--pin-line);border-radius:8px;background:var(--card);
+    color:var(--text);font:inherit;font-size:14px}
+  .pinbox textarea:focus-visible{outline:2px solid var(--pin);outline-offset:1px}
+  .pinbox .row{display:flex;align-items:center;gap:12px;margin-top:8px}
+  .pinbox .go{appearance:none;cursor:pointer;font:inherit;font-size:13.5px;
+    font-weight:500;padding:8px 14px;border:1px solid var(--pin);border-radius:8px;
+    background:var(--pin);color:var(--pin-on)}
+  .pinbox .go[disabled]{opacity:.55;cursor:progress}
+  .pinbox .st{font-size:12.5px;color:var(--text2)}
+  .pinbox .st a{color:var(--pin)}
+  .pinbox .st.err{color:var(--crit)}
+  /* odpoved agenta; pre-wrap - claude -p vraci proste odradkovany text */
+  .pinbox .ans{margin-top:10px;padding:12px 14px;border:1px solid var(--pin-line);
+    border-radius:8px;background:var(--card);white-space:pre-wrap;font-size:14px;
+    max-height:50vh;overflow-y:auto}
+  .pinbox .ans:empty{display:none}
+  /* hlavicka boxu (nazev + zavirani) ma smysl jen v mobilnim modalu */
+  .pinbox .pinbox-head{display:none}
+
+  /* Na mobilu se box pro odeslani otevira pres cele okno - psani na male
+     obrazovce v malem poli pod kartou je utrpeni. Zavira se krizkem nebo Escape. */
+  @media (max-width:720px){
+    .pinbox.send.open{position:fixed;inset:0;z-index:50;margin:0;
+      display:flex;flex-direction:column;gap:0;background:var(--bg);
+      padding:calc(12px + env(safe-area-inset-top)) 16px calc(12px + env(safe-area-inset-bottom))}
+    .pinbox.send.open .pinbox-head{display:flex;align-items:center;
+      justify-content:space-between;margin-bottom:10px;font-weight:600;
+      font-size:16px;color:var(--pin)}
+    .pinbox.send.open .pinbox-head .x{appearance:none;border:0;background:none;
+      color:var(--text2);font:20px/1 system-ui;padding:6px 10px;cursor:pointer}
+    .pinbox.send.open textarea{flex:1;min-height:0}
+    .pinbox.send.open .row{margin-top:10px}
+  }
+
+  /* ---- prohlizec souboru (zalozka Soubory) ---- */
+  .files{margin-top:18px}
+  .files[hidden]{display:none}
+  .fbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+  /* cesta jako drobenka; kazda uroven je klikatelna zpet */
+  .crumbs{flex:1;min-width:0;display:flex;flex-wrap:wrap;align-items:center;
+          gap:4px;font-size:13.5px}
+  .crumbs button{appearance:none;border:0;background:none;font:inherit;
+                 color:var(--accent);cursor:pointer;padding:2px 4px;border-radius:5px}
+  .crumbs button:hover{background:var(--chip)}
+  .crumbs button[disabled]{color:var(--text);cursor:default}
+  .crumbs .sep{color:var(--muted)}
+  .fhidden{font-size:12.5px;color:var(--text2);display:flex;align-items:center;gap:5px}
+  .fup{appearance:none;font:inherit;font-size:13px;cursor:pointer;padding:7px 12px;
+       border:1px solid var(--accent);border-radius:8px;color:var(--accent);
+       background:none;white-space:nowrap}
+  .fup:hover{background:var(--accent);color:var(--card)}
+  /* pri tazeni souboru nad kartou je zvyraznena celym ramem, ne jen barvou */
+  .files.over{border-color:var(--accent);border-style:dashed}
+
+  .flist{font-size:14px}
+  .flist li{gap:10px;padding:8px 2px}
+  .flist .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+             white-space:nowrap;text-align:left}
+  /* adresar je tlacitko (vnoreni), soubor odkaz na stazeni */
+  .flist button.nm{appearance:none;border:0;background:none;font:inherit;
+                   color:var(--text);cursor:pointer;font-weight:500}
+  .flist button.nm:hover{color:var(--accent)}
+  .flist a.nm{color:var(--accent);text-decoration:none}
+  .flist a.nm:hover{text-decoration:underline}
+  .flist .ico{flex:0 0 auto;width:16px;color:var(--muted);font-size:12px}
+  .flist .sz{flex:0 0 auto;color:var(--text2);font-size:12.5px;
+             font-variant-numeric:tabular-nums}
+  .flist .mt{flex:0 0 auto;color:var(--muted);font-size:12px;
+             font-variant-numeric:tabular-nums;min-width:9.5em;text-align:right}
+  .flist .empty{color:var(--muted);font-size:13px;padding:10px 2px}
+  @media (max-width:640px){ .flist .mt{display:none} }
+
+  /* fronta nahravani - schovana, dokud se nic neposila */
+  .queue{list-style:none;margin:12px 0 0;padding:0;font-size:13px}
+  .queue:empty{display:none}
+  .queue li{display:flex;align-items:center;gap:10px;padding:5px 0;border:0}
+  .queue .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+             white-space:nowrap;color:var(--text2)}
+  .queue .bar{width:120px;height:6px;border-radius:3px;background:var(--track);
+              overflow:hidden;flex:0 0 auto}
+  .queue .bar i{display:block;height:100%;width:0;background:var(--accent);
+                border-radius:3px;transition:width .2s}
+  .queue .st{font-size:12px;flex:0 0 auto}
+  .queue .st.ok{color:var(--good)} .queue .st.err{color:var(--crit)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="toprow">
+  <section class="card machine">
+    <h2 id="mach-h" aria-expanded="false">Stroj <span class="chev">▸</span></h2>
+    <div class="swerr" id="mach-err"></div>
+    <div class="mach-mini" id="mach-mini"></div>
+    <div class="tiles" id="tiles"></div>
+    <div class="meters" id="meters"></div>
+    <!-- usage limity Claude; plni se z /claude-usage.json (timer fractal-claude-usage) -->
+    <div class="meters" id="cmeters"></div>
+    <!-- usage limity Codexu; plni se z /codex-usage.json (timer fractal-codex-usage) -->
+    <div class="meters" id="xmeters"></div>
+    <div class="sysmeta" id="sysmeta"></div>
+    <!-- kontejnery: sbalene, po rozbaleni tabulka -->
+    <details class="dock" id="dock">
+      <summary id="dock-sum">docker</summary>
+      <div class="dock-wrap"><table class="docktab" id="dock-tab"></table></div>
+    </details>
+    <div class="actions">
+      <a class="term" href="/term/?arg=home" target="term-home" rel="noopener">▸ Terminál v <code>~</code> <span class="hint">tmux session „home"</span></a>
+      <a class="term" href="/docs.html" target="_blank" rel="noopener">☰ Zkratky a ovládání <span class="hint">claude, codex, tmux</span></a>
+      <button class="drop" id="drop" type="button">
+        ⇪ Přetáhni sem soubory <span class="hint" id="drop-hint">nebo klikni · <code>~/uploads</code></span>
+      </button>
+    </div>
+    <div class="pref">
+      <span class="preftxt">⌨ Ovládací tlačítka v terminálech
+        <span class="note">šipky, Esc, Tab, Ctrl — pro iOS bez kláves; jde přepnout i ikonkou ⌨ v terminálu</span>
+      </span>
+      <span class="swlbl" id="tk-lbl">…</span>
+      <button class="sw" id="tk-sw" type="button" role="switch" aria-checked="false"
+              aria-label="zapnout nebo vypnout ovládací tlačítka v terminálech"></button>
+    </div>
+    <input type="file" id="pick" multiple hidden>
+    <ul class="queue" id="queue"></ul>
+  </section>
+
+  <!-- Pripnute projekty ("pinned": true v registru); plni renderPinned() -->
+  <div id="pinned"></div>
+  </div>
+
+  <!-- Zalozky skupin; plni se z "groups" v /projects.json -->
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Skupiny projektů"></nav>
+
+  <!-- Karty projektu se generuji cele z /projects.json. -->
+  <div class="grid" id="grid" role="tabpanel"></div>
+
+  <!-- Prohlizec ~ (zalozka Soubory); data z /files/ (fractal-files) -->
+  <section class="card files" id="files" role="tabpanel" hidden>
+    <div class="fbar">
+      <nav class="crumbs" id="fb-crumbs" aria-label="cesta"></nav>
+      <label class="fhidden"><input type="checkbox" id="fb-hidden"> skryté</label>
+      <button class="fup" type="button" id="fb-pick-btn">⇪ Nahrát sem</button>
+    </div>
+    <input type="file" id="fb-pick" multiple hidden>
+    <ul class="flist" id="fb-list"></ul>
+    <ul class="queue" id="fb-queue"></ul>
+  </section>
+
+  <footer id="footer">
+    Odkazy označené <span class="note">(proxy)</span> jdou přes nginx. Karty se generují
+    z <code>projects.json</code>; přidání projektu = <code>project-register add</code>.
+  </footer>
+</div>
+
+<script>
+const HOST = location.hostname;
+
+/* ---------------- projekty (z registru) ---------------- */
+/* Karty se nestavi v HTML, ale z /projects.json. Diky tomu pridani projektu
+   znamena zapis do registru - zadna editace teto stranky a zadny root. */
+
+function svcRow(s) {
+  const url = s.port === null ? s.path : `http://${HOST}:${s.port}${s.path}`;
+  const li = document.createElement("li");
+  const dot = document.createElement("span"); dot.className = "dot";
+  // Sluzby se otviraji v novem okne - rozcestnik ma zustat tam, kde je,
+  // aby se z nej dalo hned skocit na dalsi sluzbu.
+  const a = document.createElement("a"); a.className = "svc"; a.href = url; a.textContent = s.name;
+  a.target = "_blank"; a.rel = "noopener";
+  const meta = document.createElement("div"); meta.className = "meta";
+  if (s.note) { const n = document.createElement("span"); n.className = "note"; n.textContent = `(${s.note})`; meta.appendChild(n); }
+  const p = document.createElement("span"); p.className = "port";
+  p.textContent = s.port === null ? ":80" : ":" + s.port; meta.appendChild(p);
+  li.append(dot, a, meta);
+
+  PROBES.push({dot, url});
+  probeDot({dot, url});
+  return li;
+}
+
+/* no-cors sonda: projde, kdyz port odpovi; selze, kdyz spojeni nenavaze.
+   Nebezi jen pri nacteni stranky - tecky se obnovuji, aby karta ukazovala
+   soucasny stav. Jinak by projekt spusteny az po otevreni stranky zustal
+   cerveny, dokud si clovek nevzpomene na reload. */
+const PROBES = [];
+
+function probeDot(p) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 4000);
+  fetch(p.url, {mode:"no-cors", cache:"no-store", signal:ctl.signal})
+    .then(() => { p.dot.classList.add("up"); p.dot.classList.remove("down"); })
+    .catch(() => { p.dot.classList.add("down"); p.dot.classList.remove("up"); })
+    .finally(() => clearTimeout(t));
+}
+
+setInterval(() => PROBES.forEach(probeDot), 20000);
+
+/* ---------------- vypinace projektu ---------------- */
+/* Prepinac vola /ctl/ (sluzba fractal-ctl na 127.0.0.1:7691, ven ji pousti
+   nginx jen do tailnetu). Stranka NEPOSILA prikaz - jen jmeno projektu a
+   slovo start/stop; co se spusti, urcuje pole "service" v registru.
+   Stav se nedrzi tady, ale cte se ze serveru: kdyz projekt shodi nekdo
+   z terminalu, prepinac se sam prepne pri dalsim dotazu. */
+
+const CTL = "/ctl";
+const SW = new Map();          // jmeno projektu -> {btn, lbl, err}
+
+function buildSwitch(name) {
+  const lbl = document.createElement("span");
+  lbl.className = "swlbl";
+  lbl.textContent = "…";
+
+  const btn = document.createElement("button");
+  btn.className = "sw";
+  btn.type = "button";
+  btn.setAttribute("role", "switch");
+  btn.setAttribute("aria-checked", "false");
+  btn.setAttribute("aria-label", "zapnout nebo vypnout " + name);
+  btn.addEventListener("click", () => toggle(name));
+
+  SW.set(name, {btn, lbl, err: null});
+  return [lbl, btn];
+}
+
+function paintSwitch(name, st) {
+  const s = SW.get(name);
+  if (!s) return;
+  s.btn.setAttribute("aria-checked", st.up ? "true" : "false");
+  s.btn.classList.toggle("busy", !!st.busy);
+  s.btn.disabled = !!st.busy;
+  s.lbl.textContent = st.busy
+    ? (st.busy === "start" ? "spouštím…" : "vypínám…")
+    : (st.up ? "běží" : "vypnuto");
+  if (s.err) {
+    s.err.textContent = st.last && st.last.ok === false
+      ? `${st.last.action === "start" ? "Spuštění" : "Vypnutí"} selhalo: ${st.last.msg}`
+      : "";
+  }
+}
+
+let ctlTimer = null;
+function scheduleCtl(ms) { clearTimeout(ctlTimer); ctlTimer = setTimeout(pollCtl, ms); }
+
+async function pollCtl() {
+  let d;
+  try {
+    const r = await fetch(CTL + "/state", {cache:"no-store"});
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    d = await r.json();
+  } catch (e) {
+    // Backend nedostupny (nebo /ctl jeste neni v nginxu): prepinac, ktery
+    // nic neprepne, je horsi nez zadny - zmizi a zbytek stranky bezi dal.
+    for (const s of SW.values()) { s.btn.remove(); s.lbl.remove(); }
+    SW.clear();
+    return;
+  }
+  let busy = false;
+  for (const name of SW.keys()) {
+    const st = (d.projects || {})[name];
+    if (!st) continue;
+    paintSwitch(name, st);
+    if (st.busy) busy = true;
+  }
+  // dokud se neco spousti nebo vypina, ptame se casteji
+  scheduleCtl(busy ? 1500 : 15000);
+}
+
+async function toggle(name) {
+  const s = SW.get(name);
+  if (!s || s.btn.disabled) return;
+  const action = s.btn.getAttribute("aria-checked") === "true" ? "stop" : "start";
+
+  // Prepnuti se ukaze hned, jeste nez server odpovi - jinak by kliknuti
+  // vypadalo jako by se nic nestalo (docker compose bezi klidne pul minuty).
+  s.btn.setAttribute("aria-checked", action === "start" ? "true" : "false");
+  s.btn.classList.add("busy");
+  s.btn.disabled = true;
+  s.lbl.textContent = action === "start" ? "spouštím…" : "vypínám…";
+  if (s.err) s.err.textContent = "";
+
+  try {
+    const r = await fetch(`${CTL}/${encodeURIComponent(name)}/${action}`, {method:"POST"});
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(j.error || "HTTP " + r.status);
+    }
+  } catch (e) {
+    if (s.err) s.err.textContent = `Požadavek selhal: ${e.message}`;
+    s.btn.disabled = false;
+    s.btn.classList.remove("busy");
+  }
+  scheduleCtl(600);
+}
+
+function projectCard(p) {
+  const card = document.createElement("section");
+  card.className = "card";
+
+  const h = document.createElement("h2");
+  h.textContent = p.title || p.name;
+
+  // Vypinac dostane jen projekt, ktery ma v registru "service" - u ostatnich
+  // by nemel co delat. Rozhoduje o tom server, ne tahle stranka.
+  const head = document.createElement("div");
+  head.className = "cardhead";
+  head.appendChild(h);
+  // Terminal je v hlavicce, hned vedle nazvu - je to nejcastejsi akce na
+  // karte, tak at se na nej neroluje pod seznam sluzeb.
+  if (p.terminal !== false) {
+    const a = document.createElement("a");
+    a.className = "term termtop";
+    a.href = "/term/?arg=" + encodeURIComponent(p.name);
+    // vlastni zalozka na projekt; jmenuje se podle nej (viz termkeys.js)
+    a.target = "term-" + p.name;
+    a.rel = "noopener";
+    a.textContent = "▸ Terminál";
+    a.title = "tmux + Claude";
+    head.appendChild(a);
+  }
+  const err = document.createElement("div");
+  err.className = "swerr";
+  if (p.service && p.service.start && p.service.stop) {
+    head.append(...buildSwitch(p.name));
+  }
+
+  const d = document.createElement("div");
+  d.className = "desc";
+  const root = document.createElement("code");
+  root.textContent = homeTilde(p.root);
+  d.appendChild(root);
+  if (p.desc) { d.insertAdjacentHTML("beforeend", " · " + p.desc); }
+
+  const ul = document.createElement("ul");
+  for (const s of (p.links || [])) ul.appendChild(svcRow(s));
+
+  card.append(head, d, err, ul);
+  if (SW.has(p.name)) SW.get(p.name).err = err;
+  return card;
+}
+
+/* ---------------- pripnute projekty ---------------- */
+/* Projekt s "pinned": true v registru se nekresli jako karta v zalozkach, ale
+   jako zvyraznena sekce vedle Stroje - chodi se do nej kazdy den, tak at se
+   na nej neklika pres zalozku. Vsechno se bere z registru: odkazy z "links",
+   tlacitka z "actions" (kazde spousti pojmenovany hook pres /ctl/run/...) a
+   kdyz ma projekt terminal, pribyde "Poslat agentovi" (text se vlozi do
+   tmux okna s agentem) a "Zeptat se" (headless dotaz, odpoved se streamuje).
+
+   BEZPECNOST: stranka nikdy neposila prikaz - jen jmeno projektu, jmeno hooku
+   nebo volny text. Co se spusti, urcuje registr na serveru. */
+
+const PINNED = document.getElementById("pinned");
+const el = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
+const homeTilde = s => (s || "").replace(/^\/home\/[^/]+/, "~").replace(/^\/Users\/[^/]+/, "~");
+
+function pinButton(text, href, target) {
+  const a = el("a", "term");
+  a.href = href; a.textContent = text;
+  a.target = target || "_blank"; a.rel = "noopener";
+  return a;
+}
+
+function renderPinned(p) {
+  const sec = el("section", "card pinned");
+  sec.id = "pin-" + p.name;
+
+  const h = el("h2");
+  h.textContent = p.title || p.name;
+
+  const d = el("div", "desc");
+  const root = el("code");
+  root.textContent = homeTilde(p.root);
+  d.appendChild(root);
+  if (p.desc) d.insertAdjacentHTML("beforeend", " · " + p.desc);
+
+  const acts = el("div", "pin-actions");
+  const hasTerm = p.terminal !== false;
+  if (hasTerm) acts.appendChild(pinButton("▸ Konzole", "/term/?arg=" + encodeURIComponent(p.name), "term-" + p.name));
+  for (const l of (p.links || [])) {
+    const url = l.port === null || l.port === undefined ? l.path : `http://${HOST}:${l.port}${l.path}`;
+    acts.appendChild(pinButton(l.name, url));
+  }
+
+  const sendBox = hasTerm ? agentBox(p, "send") : null;
+  const queryBox = hasTerm ? agentBox(p, "query") : null;
+  if (hasTerm) {
+    const sb = el("button", "term"); sb.type = "button";
+    sb.textContent = p.sendLabel || "✍ Poslat agentovi";
+    sb.addEventListener("click", () => pinOpen(sec, sendBox));
+    const qb = el("button", "term"); qb.type = "button";
+    qb.textContent = "🗨 Zeptat se";
+    qb.addEventListener("click", () => pinOpen(sec, queryBox));
+    acts.append(sb, qb);
+  }
+
+  const hookRow = el("div", "hookrow");
+  const hookSt = el("span", "st");
+  hookRow.appendChild(hookSt);
+  for (const a of (p.actions || [])) {
+    if (!a.hook) continue;
+    const b = el("button", "term"); b.type = "button";
+    b.textContent = a.name || a.hook;
+    wireHook(b, hookSt, p.name, a);
+    acts.appendChild(b);
+  }
+
+  sec.append(h, d, acts);
+  if (p.actions && p.actions.length) sec.appendChild(hookRow);
+  if (sendBox) sec.appendChild(sendBox);
+  if (queryBox) sec.appendChild(queryBox);
+  PINNED.appendChild(sec);
+}
+
+/* otevreny je nejvys jeden box v sekci; druhy klik na totez tlacitko ho zavre */
+function pinOpen(sec, box) {
+  for (const b of sec.querySelectorAll(".pinbox")) {
+    b.classList.toggle("open", b === box && !b.classList.contains("open"));
+  }
+  if (box.classList.contains("open")) box.querySelector("textarea").focus();
+}
+
+function agentBox(p, kind) {
+  const box = el("form", "pinbox " + kind);
+  const head = el("div", "pinbox-head");
+  const title = el("span");
+  title.textContent = kind === "send" ? (p.sendLabel || "✍ Poslat agentovi") : "🗨 Zeptat se";
+  const x = el("button", "x"); x.type = "button"; x.textContent = "✕"; x.setAttribute("aria-label", "zavřít");
+  x.addEventListener("click", () => box.classList.remove("open"));
+  head.append(title, x);
+
+  const ta = el("textarea");
+  ta.placeholder = kind === "send"
+    ? "Text se vloží do okna s agentem v tmux session projektu…"
+    : "Na co se chceš zeptat? Odpovídá headless agent v adresáři projektu…";
+  const row = el("div", "row");
+  const go = el("button", "go"); go.type = "submit";
+  go.textContent = kind === "send" ? "Odeslat" : "Zeptat se";
+  const st = el("span", "st");
+  row.append(go, st);
+  box.append(head, ta, row);
+  const ans = el("div", "ans");
+  if (kind === "query") box.appendChild(ans);
+
+  // Ctrl+Enter (Cmd+Enter na Macu) odesle bez mysi; obycejny Enter normalne
+  // odradkovava. Escape box zavre.
+  ta.addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); box.requestSubmit(); }
+    else if (e.key === "Escape") box.classList.remove("open");
+  });
+
+  box.addEventListener("submit", e => {
+    e.preventDefault();
+    if (!ta.value.trim()) return;
+    (kind === "send" ? agentSend : agentQuery)(p, ta, st, go, ans);
+  });
+  return box;
+}
+
+async function agentSend(p, ta, st, go) {
+  go.disabled = true;
+  st.className = "st";
+  st.textContent = "posílám… (když session neběží, startuje se — chvilku to trvá)";
+  try {
+    const r = await fetch(`${CTL}/agent/${encodeURIComponent(p.name)}/send`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({text: ta.value})
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+    ta.value = "";
+    st.innerHTML = `✓ předáno — pokračovat jde v <a href="/term/?arg=${encodeURIComponent(p.name)}" target="term-${p.name}">konzoli</a>`;
+  } catch (err) {
+    st.className = "st err";
+    st.textContent = "Nepovedlo se: " + err.message;
+  }
+  go.disabled = false;
+}
+
+async function agentQuery(p, ta, st, go, ans) {
+  go.disabled = true;
+  ans.textContent = "";
+  st.className = "st";
+  const t0 = Date.now();
+  const tick = setInterval(() => {
+    st.textContent = `agent přemýšlí… ${Math.round((Date.now() - t0) / 1000)} s`;
+  }, 1000);
+  st.textContent = "agent přemýšlí…";
+  try {
+    const r = await fetch(`${CTL}/agent/${encodeURIComponent(p.name)}/query`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({q: ta.value})
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+
+    // polling jobu; server odpoved streamuje, takze se ukazuje uz behem psani
+    let job;
+    do {
+      await new Promise(res => setTimeout(res, 1200));
+      const q = await fetch(`${CTL}/agent/${encodeURIComponent(p.name)}/query/${j.id}`, {cache: "no-store"});
+      if (!q.ok) throw new Error("HTTP " + q.status);
+      job = await q.json();
+      ans.textContent = job.answer || "";
+    } while (!job.done);
+
+    if (!job.ok) { ans.textContent = ""; throw new Error(job.answer || "bez odpovědi"); }
+    st.textContent = `hotovo za ${Math.round((Date.now() - t0) / 1000)} s`;
+  } catch (err) {
+    st.className = "st err";
+    st.textContent = "Nepovedlo se: " + err.message;
+  }
+  clearInterval(tick);
+  go.disabled = false;
+}
+
+/* Hook = pojmenovany prikaz z registru. Bezi na pozadi (radove minuty), stranka
+   jen polluje stav; kdyz beh startoval z jineho zarizeni, po nacteni se navaze. */
+function wireHook(btn, st, name, action) {
+  const url = `${CTL}/run/${encodeURIComponent(name)}/${encodeURIComponent(action.hook)}`;
+  const fmt = s => s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;
+  let timer = null;
+
+  async function poll(t0) {
+    let j;
+    try {
+      const r = await fetch(url, {cache: "no-store"});
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      j = await r.json();
+    } catch (e) {
+      st.className = "st err"; st.textContent = "Stav se nepodařilo zjistit: " + e.message;
+      clearInterval(timer); btn.disabled = false; return;
+    }
+    if (j.running) {
+      st.className = "st";
+      st.textContent = `${action.name || action.hook}: běží… ${fmt(Math.round((Date.now() - t0) / 1000))} (na pozadí, můžeš zavřít)`;
+      return;
+    }
+    clearInterval(timer); btn.disabled = false;
+    if (j.ok) {
+      st.className = "st ok";
+      st.innerHTML = `✓ ${action.name || action.hook} hotovo za ${fmt(j.took || 0)}`
+        + (action.href ? ` — <a href="${action.href}" target="_blank" rel="noopener">otevřít</a>` : "");
+    } else {
+      st.className = "st err";
+      st.textContent = "Nepovedlo se: " + (j.msg || "neznámá chyba");
+    }
+  }
+
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    st.className = "st"; st.textContent = "spouštím…";
+    const t0 = Date.now();
+    try {
+      const r = await fetch(url, {method: "POST"});
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 409) st.textContent = "už běží, čekám…";
+      else if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+    } catch (e) {
+      st.className = "st err"; st.textContent = "Nepovedlo se: " + e.message;
+      btn.disabled = false; return;
+    }
+    poll(t0);
+    timer = setInterval(() => poll(t0), 2000);
+  });
+
+  fetch(url, {cache: "no-store"}).then(r => r.json()).then(j => {
+    if (j && j.running) { btn.disabled = true; const t0 = Date.now(); poll(t0); timer = setInterval(() => poll(t0), 2000); }
+  }).catch(() => {});
+}
+
+/* ---------------- prohlizec souboru ---------------- */
+/* Cte a zapisuje pres /files/ (fractal-files na 127.0.0.1:7692, ven jen do
+   tailnetu). Backend drzi vsechny cesty uvnitr ~, takze tady staci posilat
+   relativni cestu; overovani neni na klientovi. Mazani a prejmenovani
+   backend zamerne neumi - z prohlizece jde jen cist a nahravat. */
+
+const FB = "/files";
+const fbEl    = document.getElementById("files");
+const fbList  = document.getElementById("fb-list");
+const fbCrumb = document.getElementById("fb-crumbs");
+const fbQueue = document.getElementById("fb-queue");
+const fbPickI = document.getElementById("fb-pick");
+const fbHide  = document.getElementById("fb-hidden");
+let fbPath = "";
+
+function fbCrumbs(path) {
+  fbCrumb.textContent = "";
+  const parts = path ? path.split("/") : [];
+  const add = (label, target, last) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    if (last) b.disabled = true; else b.addEventListener("click", () => fbLoad(target));
+    fbCrumb.appendChild(b);
+  };
+  add("~", "", parts.length === 0);
+  parts.forEach((p, i) => {
+    const sep = document.createElement("span");
+    sep.className = "sep"; sep.textContent = "/";
+    fbCrumb.appendChild(sep);
+    add(p, parts.slice(0, i + 1).join("/"), i === parts.length - 1);
+  });
+}
+
+function fbRow(e) {
+  const li = document.createElement("li");
+  const ico = document.createElement("span");
+  ico.className = "ico";
+  ico.textContent = e.dir ? "▸" : "·";
+
+  let nm;
+  if (e.dir) {
+    // adresar se zanori
+    nm = document.createElement("button");
+    nm.type = "button";
+    nm.textContent = e.name + "/";
+    nm.addEventListener("click", () => fbLoad(fbPath ? fbPath + "/" + e.name : e.name));
+  } else {
+    // soubor se stahne; backend posila Content-Disposition: attachment
+    nm = document.createElement("a");
+    nm.href = `${FB}/dl?path=` + encodeURIComponent(fbPath ? fbPath + "/" + e.name : e.name);
+    nm.textContent = e.name;
+  }
+  nm.className = "nm";
+  if (e.link) nm.title = "symlink";
+
+  const sz = document.createElement("span");
+  sz.className = "sz";
+  sz.textContent = e.dir ? "" : fmtSize(e.size);
+  const mt = document.createElement("span");
+  mt.className = "mt";
+  mt.textContent = e.mtime;
+
+  li.append(ico, nm, sz, mt);
+  return li;
+}
+
+async function fbLoad(path = fbPath) {
+  fbList.innerHTML = '<li class="empty">načítám…</li>';
+  let d;
+  try {
+    const r = await fetch(`${FB}/list?path=` + encodeURIComponent(path), {cache:"no-store"});
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(j.error || "HTTP " + r.status);
+    }
+    d = await r.json();
+  } catch (e) {
+    // /files/ je jen pro tailnet; z LAN vrati 403 a prochazet stejne nepujde
+    fbList.innerHTML = "";
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "Výpis se nenačetl: " + e.message;
+    fbList.appendChild(li);
+    return;
+  }
+
+  fbPath = d.path || "";
+  fbCrumbs(fbPath);
+  fbList.innerHTML = "";
+
+  // ".." jako prvni radek - na mobilu je to blizsi nez drobenka nahore
+  if (fbPath) {
+    const li = document.createElement("li");
+    const ico = document.createElement("span"); ico.className = "ico"; ico.textContent = "▴";
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "nm"; b.textContent = "..";
+    b.addEventListener("click", () => fbLoad(d.parent || ""));
+    li.append(ico, b);
+    fbList.appendChild(li);
+  }
+
+  const entries = (d.entries || []).filter(e => fbHide.checked || !e.name.startsWith("."));
+  if (!entries.length) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "prázdné";
+    fbList.appendChild(li);
+  }
+  for (const e of entries) fbList.appendChild(fbRow(e));
+}
+
+function fbUpload(files) {
+  for (const f of files) {
+    const li = document.createElement("li");
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = `${f.name} (${fmtSize(f.size)}) → ${fbPath ? "~/" + fbPath : "~"}`;
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    const fill = document.createElement("i");
+    bar.appendChild(fill);
+    li.append(nm, bar);
+    fbQueue.appendChild(li);
+
+    const done = (cls, text) => {
+      bar.remove();
+      const st = document.createElement("span");
+      st.className = "st " + cls;
+      st.textContent = text;
+      li.appendChild(st);
+    };
+
+    // XHR kvuli progressu, stejne jako u /upload/
+    const x = new XMLHttpRequest();
+    x.open("PUT", `${FB}/up?path=${encodeURIComponent(fbPath)}&name=${encodeURIComponent(f.name)}`);
+    x.upload.onprogress = ev => {
+      if (ev.lengthComputable) fill.style.width = (ev.loaded / ev.total * 100) + "%";
+    };
+    x.onload = () => {
+      if (x.status === 201) {
+        const saved = (x.responseText || "").trim();
+        if (saved && saved !== f.name) nm.textContent = `${saved} (${fmtSize(f.size)})`;
+        done("ok", "nahráno");
+        fbLoad();
+      } else {
+        done("err", "chyba " + x.status);
+      }
+    };
+    x.onerror = () => done("err", "selhalo");
+    x.send(f);
+  }
+}
+
+document.getElementById("fb-pick-btn").addEventListener("click", () => fbPickI.click());
+fbPickI.addEventListener("change", () => { fbUpload([...fbPickI.files]); fbPickI.value = ""; });
+fbHide.addEventListener("change", () => fbLoad());
+
+// Tazeni nad kartou nahrava do PRAVE otevreneho adresare. stopPropagation
+// je tu proto, aby to nepropadlo do celostrankoveho handleru, ktery sype
+// do ~/uploads.
+for (const ev of ["dragenter", "dragover"]) {
+  fbEl.addEventListener(ev, e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault(); e.stopPropagation();
+    fbEl.classList.add("over");
+  });
+}
+fbEl.addEventListener("dragleave", e => {
+  if (!hasFiles(e)) return;
+  e.stopPropagation();
+  if (!fbEl.contains(e.relatedTarget)) fbEl.classList.remove("over");
+});
+fbEl.addEventListener("drop", e => {
+  if (!hasFiles(e)) return;
+  e.preventDefault(); e.stopPropagation();
+  fbEl.classList.remove("over");
+  // celostrankovy handler uz mohl zvyraznit zonu pro ~/uploads a jeho citac
+  // hloubky se sem nedopocita - uklidime to za nej
+  dragDepth = 0;
+  drop.classList.remove("over");
+  fbUpload([...e.dataTransfer.files]);
+});
+
+/* ---------------- zalozky skupin ---------------- */
+/* Poradi zalozek urcuje "groups" v registru, prirazeni projektu pole "group".
+   Projekt bez skupiny (nebo s neznamou) spadne do zalozky Ostatni na konci,
+   aby se nove pridany projekt nikdy neztratil. Posledni zalozka je Soubory:
+   neni to skupina projektu, ukazuje prohlizec ~. */
+
+const TAB_COOKIE = "fractal_tab";
+const FALLBACK_GROUP = "Ostatní";
+const FILES_TAB = "Soubory";
+
+function readCookie(name) {
+  const hit = document.cookie.split("; ").find(c => c.startsWith(name + "="));
+  return hit ? decodeURIComponent(hit.slice(name.length + 1)) : null;
+}
+
+function writeCookie(name, val) {
+  // rok platnosti; SameSite=Lax staci, nic citliveho tu neni
+  document.cookie = `${name}=${encodeURIComponent(val)}; path=/; max-age=31536000; SameSite=Lax`;
+}
+
+function buildTabs(groups, cards) {
+  const tabs = document.getElementById("tabs");
+  const buttons = new Map();
+  let fbReady = false;
+
+  function activate(group, remember = true) {
+    for (const [g, btn] of buttons) {
+      const on = g === group;
+      btn.setAttribute("aria-selected", on ? "true" : "false");
+      btn.tabIndex = on ? 0 : -1;
+    }
+    const files = group === FILES_TAB;
+    for (const c of cards) {
+      c.el.style.display = !files && c.group === group ? "" : "none";
+    }
+    fbEl.hidden = !files;
+    // vypis se tahne az pri prvnim otevreni zalozky, ne pri nacteni stranky
+    if (files && !fbReady) { fbReady = true; fbLoad(""); }
+    if (remember) writeCookie(TAB_COOKIE, group);
+  }
+
+  for (const g of [...groups, FILES_TAB]) {
+    const btn = document.createElement("button");
+    btn.className = "tab";
+    btn.type = "button";
+    btn.setAttribute("role", "tab");
+    btn.setAttribute("aria-selected", "false");
+    btn.tabIndex = -1;
+    if (g === FILES_TAB) {
+      btn.innerHTML = "☰ Soubory";
+    } else {
+      const n = cards.filter(c => c.group === g).length;
+      btn.innerHTML = `${g}<span class="count">${n}</span>`;
+    }
+    btn.addEventListener("click", () => activate(g));
+    tabs.appendChild(btn);
+    buttons.set(g, btn);
+  }
+
+  // sipky vlevo/vpravo prepinaji zalozky, jak se u tablistu ceka
+  tabs.addEventListener("keydown", e => {
+    const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+    if (!step) return;
+    e.preventDefault();
+    const keys = [...buttons.keys()];
+    const cur = keys.findIndex(g => buttons.get(g).getAttribute("aria-selected") === "true");
+    const next = keys[(cur + step + keys.length) % keys.length];
+    activate(next);
+    buttons.get(next).focus();
+  });
+
+  const saved = readCookie(TAB_COOKIE);
+  // ulozena zalozka uz nemusi existovat (skupina se prejmenovala) - pak prvni
+  activate(buttons.has(saved) ? saved : groups[0], false);
+}
+
+async function renderProjects() {
+  const grid = document.getElementById("grid");
+
+  let reg;
+  try {
+    const r = await fetch("/projects.json", {cache:"no-store"});
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    reg = await r.json();
+  } catch (e) {
+    // Radeji viditelna chyba nez prazdna stranka - jinak by vypadek registru
+    // vypadal jako "zadne projekty nejsou".
+    const s = document.createElement("section");
+    s.className = "card";
+    const h = document.createElement("h2"); h.textContent = "Projekty se nenačetly";
+    const d = document.createElement("div"); d.className = "desc";
+    d.textContent = `/projects.json — ${e.message}. Zkontroluj registr na fractalu.`;
+    s.append(h, d);
+    grid.appendChild(s);
+    return;
+  }
+
+  // Pripnute projekty maji vlastni sekci vedle Stroje, do mrizky karet
+  // nepatri. V registru jsou stejne jako ostatni - cte je 'work' i '/term/'.
+  const all = reg.projects || [];
+  for (const p of all.filter(p => p.pinned)) renderPinned(p);
+  if (reg.footer) document.getElementById("footer").innerHTML = reg.footer;
+
+  const projects = all.filter(p => !p.pinned);
+  const declared = reg.groups || [];
+  const groupOf = p => declared.includes(p.group) ? p.group : FALLBACK_GROUP;
+
+  const cards = projects.map(p => {
+    const el = projectCard(p);
+    grid.appendChild(el);
+    return {el, group: groupOf(p)};
+  });
+
+  // zalozky jen ty, ktere neco obsahuji - prazdna zalozka nema co ukazat.
+  // Soubory pridava buildTabs sam, takze pruh je ted vzdycky k necemu.
+  const groups = [...declared, FALLBACK_GROUP].filter(g => cards.some(c => c.group === g));
+  buildTabs(groups, cards);
+}
+
+// vypinace se plni az po vykresleni karet - driv neni co prepinat
+renderProjects().then(pollCtl);
+
+/* ---------------- ovladaci tlacitka v terminalech ---------------- */
+/* Prepinac nic nevola na server - jen zapisuje do localStorage, ktere cte
+   termkeys.js injektovany do stranek ttyd (nginx sub_filter). localStorage
+   je per-origin: plati pro adresu, pres kterou se sem chodi (tailnet URL
+   a http://devbox/ jsou dve ruzne "pameti"). */
+
+const TK_KEY = "fractal-termkeys";
+const tkSw  = document.getElementById("tk-sw");
+const tkLbl = document.getElementById("tk-lbl");
+
+function tkPaint() {
+  const on = localStorage.getItem(TK_KEY) === "on";
+  tkSw.setAttribute("aria-checked", on ? "true" : "false");
+  tkLbl.textContent = on ? "zapnuto" : "vypnuto";
+}
+
+tkSw.addEventListener("click", () => {
+  const on = localStorage.getItem(TK_KEY) === "on";
+  try { localStorage.setItem(TK_KEY, on ? "off" : "on"); } catch (e) {}
+  tkPaint();
+});
+
+// prepnuti ikonkou ⌨ primo v terminalu se tu projevi bez reloadu
+window.addEventListener("storage", e => { if (e.key === TK_KEY) tkPaint(); });
+tkPaint();
+
+/* ---------------- nahravani souboru ---------------- */
+/* Sype primo do ~/uploads pres /upload/ (fractal-upload na loopbacku).
+   Backend bere PUT s telem = obsah souboru, takze zadny multipart ani
+   podstranka - soubor jde z prohlizece rovnou na disk. */
+
+const drop  = document.getElementById("drop");
+const pick  = document.getElementById("pick");
+const queue = document.getElementById("queue");
+const dropHint = document.getElementById("drop-hint");
+
+function fmtSize(b) {
+  const u = ["B", "kB", "MB", "GB"];
+  let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return b.toFixed(i ? 1 : 0) + " " + u[i];
+}
+
+function upload(files) {
+  for (const f of files) {
+    const li = document.createElement("li");
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = `${f.name} (${fmtSize(f.size)})`;
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    const fill = document.createElement("i");
+    bar.appendChild(fill);
+    li.append(nm, bar);
+    queue.appendChild(li);
+
+    const done = (cls, text) => {
+      bar.remove();
+      const st = document.createElement("span");
+      st.className = "st " + cls;
+      st.textContent = text;
+      li.appendChild(st);
+    };
+
+    // XHR kvuli progressu - fetch upload progress prohlizece stale neumi
+    const x = new XMLHttpRequest();
+    x.open("PUT", "/upload/" + encodeURIComponent(f.name));
+    x.upload.onprogress = e => {
+      if (e.lengthComputable) fill.style.width = (e.loaded / e.total * 100) + "%";
+    };
+    x.onload = () => {
+      if (x.status === 201) {
+        // backend prejmenuje, kdyz uz soubor existuje - ukazeme skutecny nazev
+        const saved = (x.responseText || "").trim();
+        if (saved && saved !== f.name) nm.textContent = `${saved} (${fmtSize(f.size)})`;
+        done("ok", "nahráno");
+        refreshUploads();
+      } else {
+        done("err", "chyba " + x.status);
+      }
+    };
+    x.onerror = () => done("err", "selhalo");
+    x.send(f);
+  }
+}
+
+async function refreshUploads() {
+  try {
+    const r = await fetch("/upload/_list", {cache:"no-store"});
+    if (!r.ok) throw new Error(r.status);
+    const files = await r.json();
+    const total = files.reduce((s, f) => s + f.size, 0);
+    const n = files.length;
+    const slovo = n === 1 ? "soubor" : n < 5 ? "soubory" : "souborů";
+    dropHint.innerHTML = n
+      ? `nebo klikni · <code>~/uploads</code> · ${n} ${slovo}, ${fmtSize(total)}`
+      : 'nebo klikni · <code>~/uploads</code>';
+  } catch (e) {
+    // /upload/ je jen pro tailnet; z LAN vrati 403 a nahravat stejne nepujde
+    dropHint.textContent = "nahrávání je dostupné jen přes tailnet";
+    drop.disabled = true;
+  }
+}
+
+drop.addEventListener("click", () => pick.click());
+pick.addEventListener("change", () => { upload([...pick.files]); pick.value = ""; });
+
+// Tahat jde kamkoli po strance, nejen na zonu - prohlizec by jinak soubor
+// otevrel misto nahrani. Citac hloubky kvuli dragleave nad vnitrnimi prvky.
+const hasFiles = e => [...(e.dataTransfer?.types || [])].includes("Files");
+let dragDepth = 0;
+
+window.addEventListener("dragenter", e => {
+  if (!hasFiles(e) || drop.disabled) return;
+  e.preventDefault(); dragDepth++; drop.classList.add("over");
+});
+window.addEventListener("dragover", e => { if (hasFiles(e) && !drop.disabled) e.preventDefault(); });
+window.addEventListener("dragleave", e => {
+  if (!hasFiles(e)) return;
+  if (--dragDepth <= 0) { dragDepth = 0; drop.classList.remove("over"); }
+});
+window.addEventListener("drop", e => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0; drop.classList.remove("over");
+  if (!drop.disabled) upload([...e.dataTransfer.files]);
+});
+
+refreshUploads();
+
+/* ---------------- stroj ---------------- */
+const GB = 1024 ** 3;
+const gb  = b => (b / GB).toFixed(1);
+const pct = (a, b) => b ? Math.round(a / b * 100) : 0;
+
+function dur(s) {
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  if (d) return `${d} d ${h} h`;
+  if (h) return `${h} h ${m} min`;
+  return `${m} min`;
+}
+
+// Prah -> stav. Barva nikdy nenese vyznam sama: vedle ni vzdy stoji cislo
+// a slovni stav, protoze status barvy jsou vyhrazene a parovane s popiskem.
+function level(v, warn, crit) {
+  if (v >= crit) return {c:"var(--crit)", t:"kritické"};
+  if (v >= warn) return {c:"var(--warn)", t:"zvýšené"};
+  return {c:"var(--good)", t:"v pořádku"};
+}
+
+function tile(lbl, val, unit, note, color) {
+  return `<div class="tile">
+    <div class="lbl">${lbl}</div>
+    <div class="val"${color ? ` style="color:${color}"` : ""}>${val}${unit ? `<span class="unit">${unit}</span>` : ""}</div>
+    ${note ? `<div class="note">${note}</div>` : ""}
+  </div>`;
+}
+
+// p se predava spocitane ze syrovych bajtu - dopocitavat ho ze zaokrouhlenych
+// GB by dalo jine cislo, nez jake ukazuje popisek.
+function meter(name, used, total, unit, p, lv) {
+  return `<div class="meter">
+    <div class="top">
+      <span class="name">${name}</span>
+      <span class="state">${lv.t}</span>
+      <span class="num">${used} / ${total} ${unit} · ${p} %</span>
+    </div>
+    <div class="track"><div class="fill" style="width:${Math.max(p, 1)}%;background:${lv.c}"></div></div>
+  </div>`;
+}
+
+async function loadStatus() {
+  let d;
+  try {
+    const r = await fetch("status.json", {cache:"no-store"});
+    if (!r.ok) throw new Error(r.status);
+    d = await r.json();
+  } catch (e) {
+    document.getElementById("mach-err").textContent = "Stav stroje nedostupný (status.json).";
+    return;
+  }
+
+  const memP  = pct(d.mem.used, d.mem.total);
+  const diskP = d.disk.pct;
+  // zatez se posuzuje vuci poctu jader, ne absolutne
+  const loadLv = level(Math.round(d.cpu.load[0] / d.cpu.cores * 100), 70, 100);
+
+  // Teplota a signal maji obracenou polaritu, proto vlastni vyhodnoceni.
+  const tempLv = d.cpu.temp_c == null ? null : level(d.cpu.temp_c, 75, 85);
+  const wifi   = d.wifi || {};
+  const sig    = wifi.signal_dbm;
+  const sigLv  = sig == null ? null
+               : sig >= -60 ? {c:"var(--good)", t:"silný"}
+               : sig >= -70 ? {c:"var(--warn)", t:"slabší"}
+               : {c:"var(--crit)", t:"slabý"};
+
+  document.getElementById("tiles").innerHTML =
+      tile("Uptime", dur(d.uptime_s), "", `od ${d.boot}`)
+    + tile("Teplota CPU", d.cpu.temp_c ?? "–", " °C", tempLv ? tempLv.t : "", tempLv && tempLv.c)
+    + tile("Zátěž", d.cpu.load[0].toFixed(2), "", `${d.cpu.load[1].toFixed(2)} / ${d.cpu.load[2].toFixed(2)} · ${d.cpu.cores} jádra · ${loadLv.t}`, loadLv.c)
+    + (d.wifi ? tile("Wi-Fi", sig ?? "–", " dBm", sigLv ? `${wifi.ssid} · ${sigLv.t}` : "", sigLv && sigLv.c) : "");
+
+  const swapP = pct(d.swap.used, d.swap.total);
+  document.getElementById("meters").innerHTML =
+      meter("Paměť", gb(d.mem.used), gb(d.mem.total), "GB", memP, level(memP, 80, 92))
+    + meter("Disk /", gb(d.disk.used), gb(d.disk.total), "GB", diskP, level(diskP, 80, 92))
+    + (d.swap.total ? meter("Swap", gb(d.swap.used), gb(d.swap.total), "GB", swapP, level(swapP, 25, 60)) : "");
+
+  const wd = !d.watchdog ? null
+    : d.watchdog.fails > 0 ? `síť: ${d.watchdog.fails} selhání v řadě`
+    : "síť: bez výpadku";
+  document.getElementById("sysmeta").innerHTML = [
+    `<span><strong>${d.host}</strong> · ${d.os}</span>`,
+    `<span>kernel ${d.kernel}</span>`,
+    `<span>${d.cpu.model}</span>`,
+    `<span>volných ${gb(d.disk.free)} GB</span>`,
+    wd ? `<span>watchdog ${wd}</span>` : "",
+    `<span>aktualizováno ${new Date(d.generated).toLocaleTimeString("cs-CZ")}</span>`
+  ].join("");
+
+  renderDock(d.containers || []);
+
+  document.getElementById("mach-err").textContent = "";
+
+  // jednoradkovy souhrn pro sbaleny stav na mobilu
+  document.getElementById("mach-mini").textContent =
+    `zátěž ${d.cpu.load[0].toFixed(2)} · ${d.cpu.temp_c ?? "–"} °C`
+    + ` · RAM ${memP} % · disk ${diskP} %`;
+}
+
+/* Kontejnery: v souhrnu jen pocet (a kolik jich nebezi), po rozbaleni
+   tabulka. Docker status je text typu "Up 11 hours (healthy)" nebo
+   "Exited (1) 3 days ago" - rozlozi se na stav / doba / health, aby se dal
+   sloupec precist jednim pohledem a ne luskat z vety. */
+function parseDockStatus(st) {
+  const m = /^(Up|Exited|Restarting|Created|Paused|Dead)\s*(\([^)]*\))?\s*(.*?)\s*(\((healthy|unhealthy|health: starting)\))?$/.exec(st || "");
+  if (!m) return {state: st || "?", up: false, since: "", health: ""};
+  return {
+    state: m[1] === "Up" ? "běží" : m[1] === "Exited" ? "vypnutý" + (m[2] ? " " + m[2] : "") : m[1].toLowerCase(),
+    up: m[1] === "Up",
+    since: m[3] || "",
+    health: m[5] ? {healthy:"healthy", unhealthy:"unhealthy", "health: starting":"starting"}[m[5]] : ""
+  };
+}
+
+function renderDock(list) {
+  const sum = document.getElementById("dock-sum");
+  const tab = document.getElementById("dock-tab");
+  const rows = list.map(c => ({name: c.name, ...parseDockStatus(c.status)}))
+                   .sort((a, b) => a.name.localeCompare(b.name));
+  const down = rows.filter(r => !r.up).length;
+  const bad  = rows.filter(r => r.health === "unhealthy").length;
+  let txt = `docker · ${rows.length} kontejnerů`;
+  if (down) txt += ` · ${down} nebeží`;
+  if (bad)  txt += ` · ${bad} unhealthy`;
+  sum.textContent = rows.length ? txt : "docker · žádné kontejnery";
+  document.getElementById("dock").classList.toggle("warn", down > 0 || bad > 0);
+
+  const esc = t => String(t).replace(/[&<>"]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch]));
+  tab.innerHTML = rows.length ? `<thead><tr>
+      <th></th><th>Kontejner</th><th>Stav</th><th>Doba</th><th>Health</th>
+    </tr></thead><tbody>` + rows.map(r => `<tr>
+      <td><span class="dot ${r.up ? "up" : "down"}"></span></td>
+      <td class="nm">${esc(r.name)}</td>
+      <td>${esc(r.state)}</td>
+      <td class="since">${esc(r.since)}</td>
+      <td class="hl ${r.health === "unhealthy" ? "bad" : ""}">${esc(r.health || "–")}</td>
+    </tr>`).join("") + "</tbody>" : "";
+}
+
+// sbaleni/rozbaleni sekce Stroj (chova se tak jen na mobilu, viz CSS)
+const mach = document.querySelector(".machine");
+document.getElementById("mach-h").addEventListener("click", () => {
+  const open = mach.classList.toggle("open");
+  document.getElementById("mach-h").setAttribute("aria-expanded", open);
+});
+
+loadStatus();
+setInterval(loadStatus, 20000);
+
+/* ---------------- usage limity Claude ---------------- */
+/* Kresli se z /claude-usage.json, ktery po 5 minutach obnovuje timer
+   fractal-claude-usage (cte OAuth token Claude Code, viz
+   ~/.local/bin/fractal-claude-usage). Kdyz updater spadne, soubor se
+   neprepisuje - stara data se poznaji podle "fetched" a oznaci se. */
+
+const CL_NAMES = {
+  session:       "Claude · session (5 h)",
+  weekly_all:    "Claude · týden",
+  weekly_scoped: "Claude · týden"
+};
+
+function fmtReset(iso) {
+  if (!iso) return "";
+  const t = new Date(iso);
+  // do 24 h staci cas; u tydennich limitu je potreba i den
+  const opts = t - Date.now() < 86400e3
+    ? {hour:"2-digit", minute:"2-digit"}
+    : {weekday:"short", hour:"2-digit", minute:"2-digit"};
+  return t.toLocaleString("cs-CZ", opts);
+}
+
+async function loadClaude() {
+  const box = document.getElementById("cmeters");
+  let d;
+  try {
+    const r = await fetch("claude-usage.json", {cache:"no-store"});
+    if (!r.ok) throw new Error(r.status);
+    d = await r.json();
+  } catch (e) {
+    // soubor jeste neexistuje nebo je rozbity - sekce proste neni
+    box.innerHTML = "";
+    return;
+  }
+
+  // updater bezi po 5 min; po 20 min bez obnovy uz datum neverit
+  const stale = Date.now() - new Date(d.fetched).getTime() > 20 * 60e3;
+
+  box.innerHTML = (d.limits || []).map(l => {
+    const name = (CL_NAMES[l.kind] || "Claude · " + l.kind)
+               + (l.model ? " " + l.model : "");
+    const lv = level(l.percent, 70, 90);
+    const state = stale ? "zastaralé" : lv.t;
+    const reset = fmtReset(l.resets_at);
+    return `<div class="meter">
+      <div class="top">
+        <span class="name">${name}</span>
+        <span class="state">${state}</span>
+        <span class="num">${l.percent} %${reset ? " · reset " + reset : ""}</span>
+      </div>
+      <div class="track"><div class="fill" style="width:${Math.max(l.percent, 1)}%;background:${stale ? "var(--muted)" : "var(--claude)"}"></div></div>
+    </div>`;
+  }).join("");
+}
+
+loadClaude();
+setInterval(loadClaude, 60000);
+
+/* ---------------- usage limity Codexu ---------------- */
+/* Stejny princip jako u Claude, jen zdroj je jiny: /codex-usage.json plni
+   timer fractal-codex-usage, ktery se pta app-serveru Codexu metodou
+   account/rateLimits/read. Je to cteci dotaz, model nespousti.
+
+   Okna se NEpojmenovavaji podle poradi (primary nemusi byt to kratke), ale
+   podle delky, kterou backend posila v "window_mins". */
+
+function cxWindow(mins) {
+  if (!mins) return "limit";
+  if (mins % 10080 === 0) { const w = mins / 10080; return w === 1 ? "t\u00fdden" : w + " t\u00fddny"; }
+  if (mins % 1440 === 0)  { const d = mins / 1440;  return d === 1 ? "den" : d + " dny"; }
+  if (mins % 60 === 0)    return (mins / 60) + " h";
+  return mins + " min";
+}
+
+async function loadCodex() {
+  const box = document.getElementById("xmeters");
+  let d;
+  try {
+    const r = await fetch("codex-usage.json", {cache:"no-store"});
+    if (!r.ok) throw new Error(r.status);
+    d = await r.json();
+  } catch (e) {
+    box.innerHTML = "";
+    return;
+  }
+
+  const stale = Date.now() - new Date(d.fetched).getTime() > 20 * 60e3;
+
+  box.innerHTML = (d.limits || []).map(l => {
+    const name  = "Codex \u00b7 " + cxWindow(l.window_mins);
+    const lv    = level(l.percent, 70, 90);
+    const state = stale ? "zastaral\u00e9" : lv.t;
+    const reset = fmtReset(l.resets_at);
+    return `<div class="meter">
+      <div class="top">
+        <span class="name">${name}</span>
+        <span class="state">${state}</span>
+        <span class="num">${l.percent} %${reset ? " \u00b7 reset " + reset : ""}</span>
+      </div>
+      <div class="track"><div class="fill" style="width:${Math.max(l.percent, 1)}%;background:${stale ? "var(--muted)" : "var(--codex)"}"></div></div>
+    </div>`;
+  }).join("");
+}
+
+loadCodex();
+setInterval(loadCodex, 60000);
+</script>
+</body>
+</html>

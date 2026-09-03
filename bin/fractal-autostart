@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Memory of switched-on projects: after a reboot only what was running comes back.
+
+Project units are deliberately NOT hooked to default.target (that would start
+everything after every reboot regardless of what the user switched off on the
+dashboard). Instead this one unit runs at login and starts the projects whose
+saved state says "on".
+
+fractal-ctl writes the state on every toggle (`set <project> on|off`) - at
+click time, not at shutdown, so it survives a power cut. A change made from
+the command line (`myproject stop`) is invisible to the dashboard, so `save`
+records the current reality (open ports) instead.
+
+    fractal-autostart boot            start the projects that should be up
+    fractal-autostart save            save the current state as the default
+    fractal-autostart show            print saved vs. actual state
+    fractal-autostart set <p> on|off  override one project
+
+A project missing from the state file counts as "on": a newly registered
+project starts after a reboot until somebody switches it off.
+"""
+import json
+import os
+import shlex
+import socket
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+from fractal_config import HOME, REGISTRY, STATE_DIR, bin_path_env  # noqa: E402
+
+STATE = os.path.join(STATE_DIR, "autostart.json")
+PROBE_TIMEOUT = 0.4
+ENV = bin_path_env()
+
+
+def services() -> dict:
+    """Controllable projects - same condition as fractal-ctl."""
+    with open(REGISTRY, encoding="utf-8") as f:
+        reg = json.load(f)
+    out = {}
+    for p in reg.get("projects", []):
+        svc = p.get("service") or {}
+        if svc.get("start") and svc.get("stop"):
+            out[p["name"]] = {
+                "start": svc["start"],
+                "probe": svc.get("probe"),
+                # the unit is named after the project unless the registry says otherwise
+                "unit": svc.get("unit") or f"{p['name']}.service",
+            }
+    return out
+
+
+def read_state() -> dict:
+    try:
+        with open(STATE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    got = data.get("projects")
+    return got if isinstance(got, dict) else {}
+
+
+def write_state(projects: dict) -> None:
+    """Atomic, so a power cut mid-write cannot leave half a file."""
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    payload = {
+        "_comment": "Which projects start after a reboot. Written by fractal-ctl on every "
+                    "dashboard toggle, read by fractal-autostart at boot. A missing project "
+                    "counts as on.",
+        "saved": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "projects": dict(sorted(projects.items())),
+    }
+    tmp = STATE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, STATE)
+
+
+def port_open(port) -> bool:
+    if not port:
+        return False
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), PROBE_TIMEOUT):
+            return True
+    except OSError:
+        return False
+
+
+def unit_loaded(unit: str) -> bool:
+    r = subprocess.run(["systemctl", "--user", "show", "-p", "LoadState", "--value", unit],
+                       capture_output=True, text=True)
+    return r.stdout.strip() == "loaded"
+
+
+def cmd_boot() -> int:
+    state = read_state()
+    for name, svc in sorted(services().items()):
+        if not state.get(name, True):
+            print(f"{name}: was down before shutdown, leaving it down")
+            continue
+        unit = svc["unit"]
+        if unit_loaded(unit):
+            # --no-block: projects come up concurrently, as they would on default.target
+            subprocess.run(["systemctl", "--user", "--no-block", "start", unit], env=ENV)
+            print(f"{name}: starting ({unit})")
+        else:
+            # "service" in the registry but no unit - run the command directly
+            subprocess.Popen(shlex.split(svc["start"]), env=ENV, cwd=HOME,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"{name}: starting ({svc['start']}, no unit)")
+    return 0
+
+
+def cmd_save() -> int:
+    """State from reality: the port the application itself listens on."""
+    state = {name: port_open(svc["probe"]) for name, svc in services().items()}
+    write_state(state)
+    for name, up in sorted(state.items()):
+        print(f"{name}: {'on' if up else 'off'}")
+    return 0
+
+
+def cmd_show() -> int:
+    state = read_state()
+    svcs = services()
+    print(f"{'project':<16} {'saved':<10} {'now'}")
+    for name, svc in sorted(svcs.items()):
+        saved = state.get(name)
+        saved_txt = "on" if saved is None or saved else "off"
+        if saved is None:
+            saved_txt += "*"
+        print(f"{name:<16} {saved_txt:<10} {'up' if port_open(svc['probe']) else 'down'}")
+    for name in sorted(set(state) - set(svcs)):
+        print(f"{name:<16} {'on' if state[name] else 'off':<10} (no longer in the registry)")
+    print(f"\n* = not yet in {STATE}, counts as on")
+    return 0
+
+
+def cmd_set(name: str, value: str) -> int:
+    if value not in ("on", "off"):
+        print("value must be on or off", file=sys.stderr)
+        return 2
+    if name not in services():
+        print(f"project '{name}' is not in the registry or has no 'service'", file=sys.stderr)
+        return 2
+    state = read_state()
+    state[name] = value == "on"
+    write_state(state)
+    return 0
+
+
+def main(argv: list) -> int:
+    cmd = argv[1] if len(argv) > 1 else "show"
+    if cmd == "boot":
+        return cmd_boot()
+    if cmd == "save":
+        return cmd_save()
+    if cmd == "show":
+        return cmd_show()
+    if cmd == "set" and len(argv) == 4:
+        return cmd_set(argv[2], argv[3])
+    print("usage: fractal-autostart [boot|save|show|set <project> on|off]", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

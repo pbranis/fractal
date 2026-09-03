@@ -1,0 +1,69 @@
+#!/bin/bash
+# work [project] - prepare a project and attach to its tmux session, which has
+# a window per service plus a "claude" window with the coding agent running.
+#
+#   work              list projects from the registry
+#   work myproject    start its services and attach
+#
+# Projects are NOT hard-coded here - they come from the registry
+# ($FRACTAL_WWW/projects.json), the same one the dashboard and the browser
+# terminal read. Add a project with `project-register`, not by editing this.
+set -u
+. "$(dirname "$(readlink -f "$0")")/../lib/fractal-env.sh"
+REG="$FRACTAL_REGISTRY"
+
+[ -f "$REG" ] || { echo "registry missing: $REG" >&2; exit 1; }
+
+usage() {
+    echo "work [project]"
+    echo
+    jq -r '.projects[] | "  \(.name)\t\(.root)\t\(.title)"' "$REG" 2>/dev/null \
+        | column -t -s $'\t' | sed 's/^/  /'
+    echo
+    echo "Inside tmux: Ctrl-b w list windows, Ctrl-b n/p next/previous, Ctrl-b d detach."
+}
+
+NAME="${1:-}"
+[ -z "$NAME" ] || [ "$NAME" = "-h" ] || [ "$NAME" = "--help" ] && { usage; exit 0; }
+
+ENTRY=$(jq -c --arg n "$NAME" '.projects[] | select(.name==$n)' "$REG" 2>/dev/null)
+if [ -z "$ENTRY" ]; then
+    echo "Unknown project '$NAME'." >&2; echo >&2; usage >&2; exit 1
+fi
+
+SESSION="$NAME"
+ROOT=$(jq -r '.root' <<<"$ENTRY")
+PRE=$(jq -r '.ctl // ""' <<<"$ENTRY")
+EXTRA=$(jq -r '.claudeArgs // ""' <<<"$ENTRY")
+WIN="$FRACTAL_AGENT_WINDOW"
+
+[ -d "$ROOT" ] || { echo "project directory does not exist: $ROOT" >&2; exit 1; }
+
+# 1. preparation: start services (already running ones are skipped by the ctl script)
+# shellcheck disable=SC2086
+[ -n "$PRE" ] && $PRE
+
+# ...and remember that the project should come back after a reboot (the same
+# memory the dashboard switch writes). Nothing to record for projects without "service".
+fractal-autostart set "$NAME" on >/dev/null 2>&1 || true
+
+AGENT_CMD=$(fractal_agent_cmd "$EXTRA")
+
+# 2. agent window; created only when missing so repeated `work` does not
+#    spawn prompt after prompt
+if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+    tmux new-session -d -s "$SESSION" -n "$WIN" -c "$ROOT" "$AGENT_CMD"
+    tmux new-window -t "$SESSION" -n shell -c "$ROOT"
+elif ! tmux list-windows -t "$SESSION" -F '#W' 2>/dev/null | grep -qx "$WIN"; then
+    tmux new-window -t "$SESSION" -n "$WIN" -c "$ROOT" "$AGENT_CMD"
+fi
+
+# agent window first; -b -t {start} inserts before the first regardless of numbering
+tmux move-window -b -s "$SESSION:$WIN" -t "$SESSION:{start}" 2>/dev/null
+tmux select-window -t "$SESSION:$WIN"
+
+if [ -n "${TMUX:-}" ]; then
+    exec tmux switch-client -t "$SESSION"
+else
+    exec tmux attach -t "$SESSION"
+fi

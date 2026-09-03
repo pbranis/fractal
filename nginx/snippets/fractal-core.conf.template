@@ -1,0 +1,77 @@
+# fractal core — include this from the `server { }` block of your site.
+# Rendered by install.sh from nginx/snippets/fractal-core.conf.template.
+#
+# Static dashboard from ${FRACTAL_WWW} (owned by the user, not root), plus
+# the loopback helper services proxied under fixed prefixes. Everything that
+# exposes a shell or the home directory is limited to the tailnet through
+# snippets/fractal-tailnet-only.conf.
+
+root ${FRACTAL_WWW};
+index index.html;
+
+location / {
+    try_files $uri $uri/ =404;
+}
+
+# --- /term: one browser terminal for ALL projects --------------------------
+# The project comes from the URL (/term/?arg=myproject) and the `term` script
+# checks it against the registry, so a new project never needs its own
+# location - and therefore no root. /termkeys.js starts with "/term", so it
+# would be swallowed by the prefix match below; the exact match wins and the
+# file is served statically from the web root.
+location = /termkeys.js { }
+
+location /term {
+    include snippets/fractal-tailnet-only.conf;
+    proxy_pass http://127.0.0.1:${FRACTAL_TERM_PORT};
+    include snippets/fractal-ttyd-proxy.conf;
+}
+
+# --- /upload: drop zone into ~/uploads --------------------------------------
+# Runs as the user (nginx could not write into a drwx------ home).
+# request_buffering off = large files stream straight to disk.
+location /upload/ {
+    proxy_pass http://127.0.0.1:${FRACTAL_UPLOAD_PORT}/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    client_max_body_size 4g;
+    proxy_request_buffering off;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    include snippets/fractal-tailnet-only.conf;
+}
+location = /upload { return 301 /upload/; }
+
+# --- /ctl: start/stop projects, talk to their agent -------------------------
+# Commands get executed behind this (docker compose, dev servers), so the same
+# rule as for terminals: tailnet only. fractal-ctl takes the command from the
+# registry - the browser only sends a project name.
+location /ctl/ {
+    proxy_pass http://127.0.0.1:${FRACTAL_CTL_PORT}/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_read_timeout 60s;
+    include snippets/fractal-tailnet-only.conf;
+}
+
+# --- /files: browse ~ ---------------------------------------------------------
+# The whole home directory is behind this: tailnet only. Writes only via PUT,
+# the backend cannot delete or overwrite.
+location /files/ {
+    proxy_pass http://127.0.0.1:${FRACTAL_FILES_PORT}/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    client_max_body_size 4g;
+    proxy_request_buffering off;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    include snippets/fractal-tailnet-only.conf;
+}
+
+# Friendly 403 for the tailnet-only locations (see fractal-tailnet-only.conf).
+location @fractal_tailnet_only {
+    default_type text/html;
+    charset utf-8;
+    return 403 '<!doctype html><meta charset="utf-8"><title>fractal - tailnet only</title><body style="font:15px/1.6 system-ui;max-width:34rem;margin:14vh auto;padding:0 1.5rem;background:#0d0d0d;color:#e7eaee"><h1 style="font-size:20px">This page is only reachable through the tailnet</h1><p>There is a shell or personal content behind this URL, so it is limited to the VPN. Your request came from an address outside it.</p><p>Try <a style="color:#6ea8fe" href="${FRACTAL_URL}">${FRACTAL_URL}</a> from a device that runs Tailscale.</p><p style="color:#9aa3af;font-size:13px">The dashboard itself works from the LAN too: <a style="color:#6ea8fe" href="/">/</a></p></body>';
+}

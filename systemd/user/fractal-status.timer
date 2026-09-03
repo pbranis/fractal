@@ -1,0 +1,10 @@
+[Unit]
+Description=fractal: refresh status.json every 20 s
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=20s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

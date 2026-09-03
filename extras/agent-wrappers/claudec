@@ -1,0 +1,2 @@
+#!/bin/bash
+exec claude -c --dangerously-skip-permissions "$@"

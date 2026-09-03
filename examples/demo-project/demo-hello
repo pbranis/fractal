@@ -1,0 +1,27 @@
+#!/bin/bash
+# demo-hello - the smallest possible fractal project: a static page served by
+# python's http.server on port 7777, inside tmux session "demo".
+# Registered by `install.sh --demo`. Same contract as examples/ctl-script.sh.
+set -u
+ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+SESSION=demo
+PORT=7777
+
+port_owner() { ss -ltnp "sport = :$PORT" 2>/dev/null | grep -oP "pid=\K[0-9]+" | head -1; }
+
+case "${1:-status}" in
+    start)
+        if [ -n "$(port_owner)" ]; then echo "  demo already running on :$PORT"; exit 0; fi
+        run="cd \"$ROOT\"; python3 -m http.server $PORT --bind 0.0.0.0; exec bash"
+        if tmux has-session -t "$SESSION" 2>/dev/null; then tmux new-window -t "$SESSION" -n web "$run"
+        else tmux new-session -d -s "$SESSION" -n web "$run"; fi
+        echo "  demo starting on :$PORT (tmux $SESSION:web)" ;;
+    stop)
+        o=$(port_owner); [ -n "$o" ] && kill "$o" && echo "  demo stopped" || echo "  demo was not running"
+        tmux kill-window -t "$SESSION:web" 2>/dev/null ;;
+    status)
+        [ -n "$(port_owner)" ] && echo "  demo: running on :$PORT" || echo "  demo: stopped" ;;
+    attach) exec tmux attach -t "$SESSION" ;;
+    cd) echo "$ROOT" ;;
+    *) echo "usage: demo-hello start|stop|status|attach|cd" >&2; exit 2 ;;
+esac

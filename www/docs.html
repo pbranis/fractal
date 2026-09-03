@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fractal — zkratky a ovládání</title>
+<style>
+  :root{
+    --bg:#f9f9f7; --card:#fcfcfb; --border:#e1e0d9; --track:#e1e0d9;
+    --text:#0b0b0b; --text2:#52514e; --muted:#898781;
+    --accent:#2a78d6; --chip:#f0efec;
+    --good:#0ca30c; --warn:#fab219; --crit:#d03b3b;
+    --claude:#d97757; --codex:#10a37f;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0d0d0d; --card:#1a1a19; --border:#2c2c2a; --track:#2c2c2a;
+      --text:#ffffff; --text2:#c3c2b7; --muted:#898781;
+      --accent:#3987e5; --chip:#232321;
+      --claude:#e08a6f; --codex:#2bb894;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0d0d0d; --card:#1a1a19; --border:#2c2c2a; --track:#2c2c2a;
+    --text:#ffffff; --text2:#c3c2b7; --muted:#898781;
+    --accent:#3987e5; --chip:#232321;
+    --claude:#e08a6f; --codex:#2bb894;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+    padding:32px 20px 64px;
+  }
+  .wrap{max-width:1040px;margin:0 auto}
+  header{margin-bottom:24px}
+  h1{margin:0 0 4px;font-size:26px;letter-spacing:-.02em}
+  .sub{color:var(--text2);font-size:14px}
+  .back{display:inline-block;margin-bottom:18px;color:var(--accent);
+        text-decoration:none;font-size:14px}
+  .back:hover{text-decoration:underline}
+
+  .card{background:var(--card);border:1px solid var(--border);
+        border-radius:12px;padding:18px;margin-bottom:18px}
+  .card h2{margin:0 0 2px;font-size:17px;display:flex;align-items:center;gap:8px}
+  .card h2 .dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+  .card .desc{color:var(--text2);font-size:13px;margin:2px 0 14px}
+  h3{margin:20px 0 8px;font-size:14px;color:var(--text2);
+     text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+  h3:first-of-type{margin-top:6px}
+
+  code{background:var(--chip);padding:1px 6px;border-radius:5px;
+       font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  kbd{display:inline-block;background:var(--chip);border:1px solid var(--border);
+      border-bottom-width:2px;border-radius:5px;padding:1px 6px;font-size:12px;
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap}
+
+  /* tabulky se na uzkem displeji scrolluji samy, stranka nikdy vodorovne */
+  .tw{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 -4px}
+  table{border-collapse:collapse;width:100%;min-width:460px;font-size:14px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);
+        vertical-align:top}
+  th{font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;
+     letter-spacing:.05em}
+  tr:last-child td{border-bottom:0}
+  td.k{white-space:nowrap;width:1%}
+  td.d{color:var(--text2)}
+
+  .note{border-left:3px solid var(--warn);background:var(--chip);
+        border-radius:0 8px 8px 0;padding:10px 14px;margin:14px 0;font-size:13.5px}
+  .note b{color:var(--text)}
+  .note.good{border-left-color:var(--good)}
+  footer{color:var(--muted);font-size:12.5px;margin-top:28px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="/">‹ zpět na rozcestník</a>
+  <header>
+    <h1>Zkratky a ovládání</h1>
+    <div class="sub">Příkazy pro Claude Code a Codex na fractalu · klávesy v tmuxu</div>
+  </header>
+
+  <!-- ================= CLAUDE ================= -->
+  <section class="card">
+    <h2><span class="dot" style="background:var(--claude)"></span>Claude Code</h2>
+    <div class="desc">Primární nástroj. Wrappery jsou v <code>~/.local/bin</code>, všechny mají zapnuté <code>--dangerously-skip-permissions</code>.</div>
+    <div class="tw"><table>
+      <thead><tr><th>Příkaz</th><th>Co dělá</th><th>Rozbaleno na</th></tr></thead>
+      <tbody>
+        <tr><td class="k"><code>clauded</code></td><td class="d">Nové sezení, neptá se na povolení. Každodenní varianta.</td><td class="d"><code>claude --dangerously-skip-permissions</code></td></tr>
+        <tr><td class="k"><code>claudec</code></td><td class="d">Naváže na poslední sezení v tomhle adresáři.</td><td class="d"><code>claude -c --dangerously-skip-permissions</code></td></tr>
+        <tr><td class="k"><code>clauder</code></td><td class="d">Nabídne výběr z uložených sezení.</td><td class="d"><code>claude -r --dangerously-skip-permissions</code></td></tr>
+        <tr><td class="k"><code>claude</code></td><td class="d">Holý příkaz — ptá se na každou akci.</td><td class="d">—</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <!-- ================= CODEX ================= -->
+  <section class="card">
+    <h2><span class="dot" style="background:var(--codex)"></span>Codex</h2>
+    <div class="desc">Doplňkový nástroj (předplatné ChatGPT, přihlášeno přes <code>codex login</code>). Koncovky schválně stejné jako u claude, aby se nemusela přepínat hlava.</div>
+    <div class="tw"><table>
+      <thead><tr><th>Příkaz</th><th>Co dělá</th><th>Rozbaleno na</th></tr></thead>
+      <tbody>
+        <tr><td class="k"><code>codexs</code></td><td class="d"><b>Doporučený výchozí.</b> Neptá se, ale zapisuje jen do pracovního adresáře.</td><td class="d"><code>codex -s workspace-write -a never --search</code></td></tr>
+        <tr><td class="k"><code>codexd</code></td><td class="d">Bez ptaní a bez sandboxu — smí sáhnout kamkoli. Jen když je to potřeba.</td><td class="d"><code>codex --dangerously-bypass-approvals-and-sandbox --search</code></td></tr>
+        <tr><td class="k"><code>codexc</code></td><td class="d">Naváže na poslední sezení.</td><td class="d"><code>codex resume --last …</code></td></tr>
+        <tr><td class="k"><code>codexr</code></td><td class="d">Nabídne výběr ze sezení.</td><td class="d"><code>codex resume …</code></td></tr>
+        <tr><td class="k"><code>codex</code></td><td class="d">Holý příkaz — ptá se, běží v read-only sandboxu.</td><td class="d">—</td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="note"><b>Past:</b> <code>codex -c</code> <b>není</b> continue jako u claude — je to <code>--config</code> a spadne na parsování. Continue je <code>codex resume --last</code>, tedy <code>codexc</code>.</div>
+
+    <h3>Rozdíly proti claude</h3>
+    <div class="tw"><table>
+      <tbody>
+        <tr><td class="k">Sandbox</td><td class="d">Codex má mezistupeň, který claude nemá: <code>-s workspace-write</code> pustí zápis jen do projektu. U claude je to všechno, nebo nic.</td></tr>
+        <tr><td class="k">Web search</td><td class="d">Codex ho má <b>defaultně vypnutý</b>. Proto mají všechny zkratky <code>--search</code> — bez toho odpovídá jen ze svých znalostí.</td></tr>
+        <tr><td class="k">Sudo</td><td class="d"><code>SUDO_ASKPASS</code> je jen v nastavení claude, ne v shellu. Codex tedy bezheslové <code>sudo -A</code> nemá ani v režimu <code>codexd</code>.</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3>Další podpříkazy</h3>
+    <div class="tw"><table>
+      <tbody>
+        <tr><td class="k"><code>codex exec "…"</code></td><td class="d">Neinteraktivně, na skripty a jednorázovky.</td></tr>
+        <tr><td class="k"><code>codex review</code></td><td class="d">Code review nad aktuálním diffem.</td></tr>
+        <tr><td class="k"><code>codex doctor</code></td><td class="d">Diagnostika instalace, přihlášení a sítě.</td></tr>
+        <tr><td class="k"><code>codex login status</code></td><td class="d">Ukáže, jestli a jak jsi přihlášený.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <!-- ================= TMUX ================= -->
+  <section class="card">
+    <h2><span class="dot" style="background:var(--accent)"></span>tmux</h2>
+    <div class="desc">Služby projektů běží v tmux sessionech pojmenovaných podle projektu. Prefix je <b>výchozí</b> <kbd>Ctrl</kbd>+<kbd>b</kbd> — mačká se první, pustí, teprve pak následující klávesa.</div>
+
+    <h3>Jak se dovnitř dostaneš</h3>
+    <div class="tw"><table>
+      <tbody>
+        <tr><td class="k"><code>work</code></td><td class="d">Vypíše projekty z registru.</td></tr>
+        <tr><td class="k"><code>work shop</code></td><td class="d">Nastartuje služby projektu a připojí tě do jeho sessionu.</td></tr>
+        <tr><td class="k">Terminál v prohlížeči</td><td class="d">Odkaz na kartě projektu na rozcestníku — je to <b>tentýž</b> session jako přes SSH.</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3>Okna</h3>
+    <div class="tw"><table>
+      <tbody>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>w</kbd></td><td class="d">Seznam oken a sessionů (stromem, dá se v něm hledat).</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>c</kbd></td><td class="d">Nové okno.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>n</kbd> / <kbd>p</kbd></td><td class="d">Další / předchozí okno.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>1</kbd>…<kbd>9</kbd></td><td class="d">Okno podle čísla. <b>Číslují se od 1</b>, ne od nuly.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>,</kbd></td><td class="d">Přejmenovat okno.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>f</kbd></td><td class="d">Najít okno podle textu.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>&amp;</kbd></td><td class="d">Zavřít okno (ptá se na potvrzení).</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3>Panely</h3>
+    <div class="tw"><table>
+      <tbody>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>|</kbd></td><td class="d">Rozdělit svisle. <b>Vlastní binding</b> — dědí aktuální adresář.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>-</kbd></td><td class="d">Rozdělit vodorovně, taky s děděním adresáře.</td></tr>
+        <tr><td class="k"><kbd>Alt</kbd>+<kbd>šipky</kbd></td><td class="d"><b>Bez prefixu</b> přepnout panel. Nejrychlejší cesta, vlastní binding.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>šipky</kbd></td><td class="d">Totéž s prefixem, když Alt polyká terminál.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>z</kbd></td><td class="d">Zvětšit panel na celé okno / zpět. Na čtení logů nejužitečnější klávesa.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>o</kbd></td><td class="d">Cyklovat panely.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>Space</kbd></td><td class="d">Prostřídat rozložení panelů.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>Alt</kbd>+<kbd>šipky</kbd></td><td class="d">Změnit velikost po 5 buňkách (<kbd>Ctrl</kbd>+<kbd>šipky</kbd> po jedné).</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>x</kbd></td><td class="d">Zavřít panel (ptá se).</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3>Odpojení a sessiony</h3>
+    <div class="tw"><table>
+      <tbody>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>d</kbd></td><td class="d"><b>Odpojit se.</b> Služby běží dál — tohle je správný způsob, jak odejít.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>s</kbd></td><td class="d">Přepnout na jiný session.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>$</kbd></td><td class="d">Přejmenovat session.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>r</kbd></td><td class="d">Znovu načíst <code>~/.tmux.conf</code>. Vlastní binding.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>?</kbd></td><td class="d">Vypsat všechny klávesy.</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3>Scrollback a kopírování</h3>
+    <div class="note good">Myš je zapnutá — <b>kolečkem se rovnou scrolluje</b> a klikem se vybírá okno i panel. Historie je 50 000 řádků, takže log služby se dá dolistovat hodně zpátky.</div>
+    <div class="tw"><table>
+      <tbody>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>[</kbd></td><td class="d">Vstup do copy mode (režim čtení historie). Klávesy jsou <b>emacs</b>.</td></tr>
+        <tr><td class="k"><kbd>PgUp</kbd> / <kbd>PgDn</kbd></td><td class="d">Stránkování v copy mode.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>r</kbd> / <kbd>Ctrl</kbd>+<kbd>s</kbd></td><td class="d">Hledat v historii nahoru / dolů.</td></tr>
+        <tr><td class="k"><kbd>g</kbd></td><td class="d">Skočit na číslo řádku.</td></tr>
+        <tr><td class="k"><kbd>Space</kbd></td><td class="d">Začít výběr (pak šipky).</td></tr>
+        <tr><td class="k"><kbd>Alt</kbd>+<kbd>w</kbd></td><td class="d">Zkopírovat výběr a odejít z copy mode.</td></tr>
+        <tr><td class="k"><kbd>q</kbd></td><td class="d">Odejít z copy mode.</td></tr>
+        <tr><td class="k"><kbd>Ctrl</kbd>+<kbd>b</kbd> <kbd>]</kbd></td><td class="d">Vložit z tmux bufferu.</td></tr>
+      </tbody>
+    </table></div>
+    <div class="note">Kopírování jde přes <b>OSC 52</b> do schránky počítače, ze kterého jsi připojený — ne jen do tmux bufferu. Funguje to i přes SSH a v terminálu v prohlížeči.</div>
+  </section>
+
+  <footer>Zdroj pravdy jsou skripty v <code>~/.local/bin</code> a <code>~/.tmux.conf</code>.</footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,16 @@
+[Unit]
+Description=fractal: after a reboot start only the projects that were running
+After=default.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Project units are not wanted by default.target (that would start everything
+# after every reboot). This unit starts them according to autostart.json;
+# `systemctl --user start|stop <project>` keeps working by hand.
+Environment=PATH=${HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=${HOME}/.local/bin/fractal-autostart boot
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

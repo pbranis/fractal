@@ -1,0 +1,40 @@
+#!/bin/bash
+# term - what ttyd runs behind /term/. The project comes from the URL: /term/?arg=myproject
+#
+# The name is ALWAYS checked against the registry. Without that, the url-arg
+# would let anyone run an arbitrary command through the URL - and there is a
+# shell behind this endpoint.
+set -u
+. "$(dirname "$(readlink -f "$0")")/../lib/fractal-env.sh"
+REG="$FRACTAL_REGISTRY"
+
+list() {
+    echo "Projects:"
+    jq -r '.projects[] | "  " + .name + "  — " + .title' "$REG" 2>/dev/null
+}
+
+name="${1:-}"
+
+if [ -z "$name" ]; then
+    echo "fractal terminal"; echo
+    list; echo
+    read -rp "project (Enter = plain shell): " name
+    [ -z "$name" ] && exec bash -l
+fi
+
+# Reserved name "home": a plain shell in ~ inside tmux session "home". Not a
+# project, so no registry check - nothing from the URL is executed, a shell
+# just opens.
+if [ "$name" = home ] || [ "$name" = "~" ]; then
+    tmux has-session -t home 2>/dev/null || tmux new-session -d -s home -c "$HOME"
+    exec tmux attach -t home
+fi
+
+if ! jq -e --arg n "$name" '.projects[] | select(.name==$n)' "$REG" >/dev/null 2>&1; then
+    echo "Unknown project: '$name'"; echo
+    list; echo
+    echo "Continuing with a plain shell."; echo
+    exec bash -l
+fi
+
+exec work "$name"

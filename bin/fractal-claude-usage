@@ -1,0 +1,38 @@
+#!/bin/bash
+# fractal-claude-usage - writes the Claude usage limits (session / week) to
+# $FRACTAL_WWW/claude-usage.json for the dashboard meters. Optional.
+#
+# The token comes from ~/.claude/.credentials.json - Claude Code refreshes it
+# itself while you use it, this script only reads it. Runs from the systemd
+# user timer fractal-claude-usage.timer every 5 minutes.
+#
+# On error the old file is NOT overwritten - the dashboard detects stale data
+# from "fetched" and labels the meters accordingly.
+set -uo pipefail
+. "$(dirname "$(readlink -f "$0")")/../lib/fractal-env.sh"
+
+CRED="$HOME/.claude/.credentials.json"
+OUT="$FRACTAL_WWW/claude-usage.json"
+
+TOK=$(jq -r '.claudeAiOauth.accessToken // empty' "$CRED" 2>/dev/null)
+if [ -z "$TOK" ]; then
+    echo "fractal-claude-usage: no accessToken in $CRED" >&2
+    exit 1
+fi
+
+resp=$(curl -sf -m 15 https://api.anthropic.com/api/oauth/usage \
+        -H "Authorization: Bearer $TOK" \
+        -H "anthropic-beta: oauth-2025-04-20") || {
+    echo "fractal-claude-usage: usage API request failed" >&2
+    exit 1
+}
+
+# only what the dashboard draws; scope.model tells the weekly total from per-model
+jq --arg plan "$(jq -r '.claudeAiOauth.subscriptionType // ""' "$CRED")" '{
+    fetched: (now | todate),
+    plan: $plan,
+    limits: [ (.limits // [])[] | {
+        kind, percent, resets_at,
+        model: (.scope.model.display_name // null)
+    } ]
+}' <<<"$resp" > "$OUT.tmp" && mv "$OUT.tmp" "$OUT"

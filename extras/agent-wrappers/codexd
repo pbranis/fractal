@@ -1,0 +1,4 @@
+#!/bin/bash
+# codexd - codex bez ptani a bez sandboxu (protejsek "clauded").
+# Muze sahat kamkoli v systemu. Kdyz staci pracovni adresar, pouzij "codexs".
+exec codex --dangerously-bypass-approvals-and-sandbox --search "$@"

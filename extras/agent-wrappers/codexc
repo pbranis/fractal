@@ -1,0 +1,4 @@
+#!/bin/bash
+# codexc - navaze na POSLEDNI sezeni (protejsek "claudec").
+# Pozor: "codex -c" NENI continue, to je --config. Continue je "resume --last".
+exec codex resume --last --dangerously-bypass-approvals-and-sandbox --search "$@"

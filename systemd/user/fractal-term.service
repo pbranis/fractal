@@ -1,0 +1,17 @@
+[Unit]
+Description=fractal: ttyd browser terminal at /term/ (project comes from ?arg=)
+After=default.target
+
+[Service]
+# --url-arg: the client passes the project name in the URL (/term/?arg=x). The
+# `term` script validates it against the registry, so nothing else can be run
+# through the URL. One nginx location serves every project - adding a project
+# never touches nginx, so it never needs root.
+ExecStart=${FRACTAL_TTYD} --interface lo --port ${FRACTAL_TERM_PORT} --base-path /term --writable --url-arg --max-clients 8 -t titleFixed=fractal -t fontSize=14 ${HOME}/.local/bin/term
+Restart=always
+RestartSec=3
+Environment=PATH=${HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=TERM=xterm-256color
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,35 @@
+# fractal — dashboard on :80. Rendered by install.sh into
+# /etc/nginx/sites-available/fractal (only when no site exists yet).
+#
+# The generic part lives in snippets/fractal-core.conf so it can be upgraded
+# with the repo. Add your own per-project locations below the include - e.g.
+# a static report directory or a proxy for a backend that binds 127.0.0.1.
+# Anything personal gets `include snippets/fractal-tailnet-only.conf;`.
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    include snippets/fractal-core.conf;
+
+    # --- your additions -------------------------------------------------------
+    # location /reports {
+    #     alias ${FRACTAL_WWW}/reports;
+    #     try_files $uri $uri/ =404;
+    #     include snippets/fractal-tailnet-only.conf;
+    # }
+}
+
+# A backend that only listens on 127.0.0.1 can be exposed on its own port so
+# the dashboard can link to it. Each service gets its own port (not a
+# sub-path) so nothing has to rewrite paths in HTML or JSON responses.
+#
+# server {
+#     listen 8811;
+#     location / {
+#         proxy_pass http://127.0.0.1:8801;
+#         proxy_set_header Host $host;
+#         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+#     }
+# }

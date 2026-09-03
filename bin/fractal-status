@@ -1,0 +1,98 @@
+#!/bin/bash
+# fractal-status - writes $FRACTAL_WWW/status.json for the "Machine" card.
+#
+# Runs from a systemd user timer every 20 s; the page fetches the file and
+# draws tiles and meters from it. Deliberately without exporters or agents:
+# only /proc, /sys, df, and jq. Docker and Wi-Fi are optional - when they
+# are not there the fields are empty and the dashboard hides them.
+set -u
+. "$(dirname "$(readlink -f "$0")")/../lib/fractal-env.sh"
+export PATH="$PATH:/usr/sbin:/sbin"
+
+OUT="$FRACTAL_WWW/status.json"
+
+# --- temperature: prefer x86_pkg_temp, else the hottest zone ----------------
+temp=""
+for z in /sys/class/thermal/thermal_zone*; do
+    [ -r "$z/temp" ] || continue
+    t=$(( $(cat "$z/temp" 2>/dev/null || echo 0) / 1000 ))
+    if [ "$(cat "$z/type" 2>/dev/null)" = "x86_pkg_temp" ]; then temp=$t; break; fi
+    [ -z "$temp" ] || [ "$t" -gt "$temp" ] && temp=$t
+done
+
+read -r load1 load5 load15 _ < /proc/loadavg
+cores=$(nproc)
+model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//')
+uptime_s=$(cut -d. -f1 /proc/uptime)
+
+mem_total=$(( $(awk '/^MemTotal:/{print $2}' /proc/meminfo) * 1024 ))
+mem_avail=$(( $(awk '/^MemAvailable:/{print $2}' /proc/meminfo) * 1024 ))
+swap_total=$(( $(awk '/^SwapTotal:/{print $2}' /proc/meminfo) * 1024 ))
+swap_free=$(( $(awk '/^SwapFree:/{print $2}' /proc/meminfo) * 1024 ))
+
+read -r d_size d_used d_avail d_pct <<< "$(df -B1 --output=size,used,avail,pcent / | tail -1 | tr -d '%')"
+
+# --- Wi-Fi (optional) --------------------------------------------------------
+iface="$FRACTAL_WIFI_IFACE"
+if [ -z "$iface" ]; then
+    for d in /sys/class/net/*; do
+        [ -d "$d/wireless" ] && { iface=$(basename "$d"); break; }
+    done
+fi
+ssid=""; sig=""; qual=""
+if [ -n "$iface" ] && command -v iwconfig >/dev/null; then
+    # one call - repeated calls could return mutually inconsistent lines
+    iwout=$(iwconfig "$iface" 2>/dev/null)
+    ssid=$(grep -oP 'ESSID:"\K[^"]*' <<< "$iwout")
+    sig=$(grep -oP 'Signal level=\K-?[0-9]+' <<< "$iwout")
+    qual=$(grep -oP 'Link Quality=\K[0-9]+/[0-9]+' <<< "$iwout")
+    # Some drivers report Quality=70/70 with Signal level=0 dBm while scanning.
+    # 0 dBm would mean the transmitter sits inside the antenna - drop it.
+    if [ -z "$sig" ] || [ "$sig" -eq 0 ] 2>/dev/null; then sig=""; qual=""; fi
+fi
+
+# --- docker containers (optional) --------------------------------------------
+containers='[]'
+if command -v docker >/dev/null; then
+    containers=$(docker ps --format '{{.Names}}\t{{.Status}}' 2>/dev/null \
+        | jq -Rn '[inputs | split("\t") | {name: .[0], status: .[1]}]')
+    [ -z "$containers" ] && containers='[]'
+fi
+
+# --- network watchdog (optional; see extras/net-watchdog) -------------------
+wd_fails=$(cat /run/net-watchdog.fails 2>/dev/null || echo "")
+wd_last=$(tail -1 /var/log/net-watchdog.log 2>/dev/null || echo "")
+
+jq -n \
+  --arg generated "$(date -Is)" \
+  --arg host "$(hostname)" \
+  --arg os "$(. /etc/os-release; echo "$PRETTY_NAME")" \
+  --arg kernel "$(uname -r)" \
+  --arg model "$model" \
+  --arg boot "$(uptime -s)" \
+  --arg ssid "${ssid:-}" \
+  --arg qual "${qual:-}" \
+  --arg wd_last "${wd_last:-}" \
+  --argjson cores "$cores" \
+  --argjson load "[$load1,$load5,$load15]" \
+  --argjson temp "${temp:-null}" \
+  --argjson uptime_s "$uptime_s" \
+  --argjson mem_total "$mem_total" --argjson mem_avail "$mem_avail" \
+  --argjson swap_total "$swap_total" --argjson swap_free "$swap_free" \
+  --argjson d_size "$d_size" --argjson d_used "$d_used" --argjson d_avail "$d_avail" --argjson d_pct "$d_pct" \
+  --argjson sig "${sig:-null}" \
+  --argjson containers "$containers" \
+  --argjson wd_fails "${wd_fails:-null}" \
+  '{
+     generated: $generated, host: $host, os: $os, kernel: $kernel, boot: $boot,
+     uptime_s: $uptime_s,
+     cpu:  {model: $model, cores: $cores, load: $load, temp_c: $temp},
+     mem:  {total: $mem_total, available: $mem_avail, used: ($mem_total - $mem_avail)},
+     swap: {total: $swap_total, used: ($swap_total - $swap_free)},
+     disk: {total: $d_size, used: $d_used, free: $d_avail, pct: $d_pct},
+     wifi: (if $ssid == "" and $sig == null then null else {ssid: $ssid, signal_dbm: $sig, quality: $qual} end),
+     containers: $containers,
+     watchdog: (if $wd_fails == null then null else {fails: $wd_fails, last_event: $wd_last} end)
+   }' > "$OUT.tmp" && mv "$OUT.tmp" "$OUT"
+
+chmod 644 "$OUT"

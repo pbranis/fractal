@@ -1,0 +1,82 @@
+{
+  "_comment": "fractal project registry - the single source of truth. Read by the dashboard (index.html), the `work` switcher, the browser terminal (/term/), fractal-ctl and fractal-autostart. Owned by the user, so adding a project needs no root. Edit by hand or with `project-register`.",
+  "groups": [
+    "Work",
+    "Personal"
+  ],
+  "footer": "Links marked <span class=\"note\">(proxy)</span> go through nginx because the backend binds 127.0.0.1 only.",
+  "projects": [
+    {
+      "name": "shop",
+      "title": "Shop (Next.js + Postgres)",
+      "group": "Work",
+      "root": "/home/me/projects/shop",
+      "desc": "control with <code>shop start|stop|status</code>",
+      "ctl": "shop start",
+      "claudeArgs": "",
+      "terminal": true,
+      "links": [
+        {"name": "Web", "port": 3000, "path": "/", "note": ""},
+        {"name": "Admin", "port": 3000, "path": "/admin", "note": ""},
+        {"name": "API docs", "port": 8811, "path": "/docs", "note": "proxy"}
+      ],
+      "service": {
+        "start": "shop start",
+        "stop": "shop stop",
+        "probe": 3000
+      }
+    },
+    {
+      "name": "docs",
+      "title": "Company handbook",
+      "group": "Work",
+      "root": "/home/me/projects/handbook",
+      "desc": "Astro static site · <code>handbook start|stop</code>",
+      "ctl": "handbook start",
+      "claudeArgs": "",
+      "terminal": true,
+      "links": [
+        {"name": "Preview", "port": 4321, "path": "/", "note": ""},
+        {"name": "Published HTML", "port": null, "path": "/handbook/", "note": "tailnet only"}
+      ],
+      "service": {
+        "start": "handbook start",
+        "stop": "handbook stop",
+        "probe": 4321
+      }
+    },
+    {
+      "name": "notes",
+      "title": "Second brain",
+      "group": "Personal",
+      "pinned": true,
+      "root": "/home/me/projects/notes",
+      "desc": "Markdown vault kept in a private git repo · <code>notes sync</code>",
+      "ctl": "notes sync",
+      "claudeArgs": "--add-dir /home/me/projects/handbook",
+      "terminal": true,
+      "sendLabel": "✍ Braindump",
+      "sendPrefix": "/braindump ",
+      "links": [
+        {"name": "☰ Rendered notes", "port": null, "path": "/notes-html/", "note": "tailnet only"}
+      ],
+      "hooks": {
+        "refresh": "notes-inbox --force"
+      },
+      "actions": [
+        {"name": "⟳ Inbox & dashboard", "hook": "refresh", "href": "/notes-html/dashboard.html"}
+      ]
+    },
+    {
+      "name": "lib-utils",
+      "title": "utils (library)",
+      "group": "Personal",
+      "root": "/home/me/projects/lib-utils",
+      "desc": "no services - just a terminal with the agent in the repo",
+      "ctl": "",
+      "claudeArgs": "",
+      "terminal": true,
+      "links": []
+    }
+  ]
+}

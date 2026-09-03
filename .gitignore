@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.bak
+*.bak-*
+*.tmp
+.DS_Store
+# instance data lives in $FRACTAL_WWW and ~/.config/fractal, never here
+projects.json
+status.json
+claude-usage.json
+codex-usage.json
+fractal.env
