@@ -43,6 +43,8 @@ looks the command up server-side:
 | `POST /ctl/agent/<p>/query` | free text | `claude -p …` with the text on **stdin** |
 | `PUT /files/up`, `/upload/<name>` | file body | written under `~`, never overwriting, `realpath` must stay inside `~` |
 | `/term/?arg=<p>` | project name | `work <p>` only if `p` is in the registry; otherwise a plain shell |
+| `/term/?arg=pane:<n>` | digits | attaches to tmux pane `%<n>` only if it already exists; nothing is started |
+| `POST /ctl/sessions/<id>/summary` | session id | `claude -p` without tools, fed that session's transcript tail on stdin; the id must belong to a live session |
 
 Commands run with `shlex.split` + `execvp`, no shell, so a crafted name cannot
 chain anything. Text for the agent goes through tmux buffers (literal paste,
@@ -113,6 +115,11 @@ your tailnet, runs unattended. If that is not acceptable, set
 - `fractal-codex-usage` asks the local Codex app-server for rate limits; no
   network call of its own.
 - `fractal-status` reads `/proc`, `/sys`, `df`, `iwconfig`, `docker ps`.
+- `fractal-ctl` (`/ctl/sessions`) reads `~/.claude/sessions/*.json` and the
+  tail of each live session's transcript to show its last prompt and answer.
+  That is why the list is behind tailnet-only `/ctl`, not in the web root. A
+  summary sends the recent prompts and answers of one session to the model,
+  and only when you press the button.
 
 ## Reporting
 

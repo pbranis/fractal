@@ -29,6 +29,9 @@ to add a project.
 - **Telegram bot** (optional) with the same verbs: `/status`, `/start`,
   `/stop`, `/run`, `/send`, `/ask` from your phone, plus a ping when a project
   dies or comes back on its own. Long polling, so no public address is needed.
+- **Claude sessions:** every running Claude Code session on the machine with
+  its state (working / waiting, for how long), title, last prompt and answer,
+  a button into its exact tmux pane and an on-demand one-line summary.
 - **Autostart with memory.** After a reboot only the projects that were
   running come back.
 - **Machine card:** load, temperature, memory, disk, Wi-Fi, docker containers,

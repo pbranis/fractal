@@ -14,7 +14,7 @@ read, on every request, by:
 |---|---|
 | `www/index.html` | groups → tabs, projects → cards, `pinned` → highlighted section, `footer` |
 | `bin/work` | `root`, `ctl`, `claudeArgs` to prepare and attach a tmux session |
-| `bin/term` | validates the `?arg=` project name before handing over to `work` |
+| `bin/term` | validates the `?arg=` project name before handing over to `work`; `pane:<n>` attaches to an existing pane |
 | `bin/fractal-ctl` | `service.start/stop/probe`, `hooks`, `sendPrefix` |
 | `bin/fractal-telegram` | validates project names; everything else goes through `fractal-ctl` |
 | `bin/fractal-autostart` | `service` to know which units to start at boot |
@@ -153,10 +153,36 @@ A watcher thread compares `/ctl/state`
 snapshots and messages every allowed user when a project changed between
 up and down while no toggle was in flight.
 
+## Claude sessions
+
+The *Claude sessions* card lists every interactive Claude Code process on the
+machine, not just the agent windows `work` created. `lib/fractal_sessions.py`
+(served as `GET /ctl/sessions`) needs no hooks: Claude Code keeps
+`~/.claude/sessions/<pid>.json` current by itself (status, when it changed,
+cwd, tmux pane, session id). A file only counts when its pid is alive and
+`/proc/<pid>/stat` has the recorded start time, so a reused pid never
+resurrects an old session. `busy` means working; `idle` and `shell` (turn
+finished, a background shell still running) mean it waits for you. Title, last
+prompt and last answer come from the transcript
+`~/.claude/projects/*/<session id>.jsonl`, parsed incrementally from a
+remembered byte offset (first read: at most the last 4 MB). The project is the
+tmux session name when it is in the registry, else the deepest `root` that
+holds the cwd.
+
+The one-sentence summary is on demand only (`POST /ctl/sessions/<id>/summary`):
+`claude -p --model haiku` with no tools, no setting sources and no session
+persistence, fed the recent prompts and answers on stdin. Results are cached in
+`$FRACTAL_STATE_DIR/session-summaries.json` and pruned when a session ends.
+The terminal button opens `/term/?arg=pane:<n>`, which joins a grouped tmux
+session so other clients keep their current window.
+
+It is served by `/ctl` rather than as a static JSON in the web root because
+prompts are personal content and `/ctl` is tailnet-only.
+
 ## Dashboard internals
 
 `www/index.html` is one file: CSS, markup, JS. It fetches `projects.json`,
-`status.json`, the two usage JSONs, `/ctl/state` and `/files/list`, all with
+`status.json`, the two usage JSONs, `/ctl/state`, `/ctl/sessions` and `/files/list`, all with
 `cache: no-store`, and re-polls on intervals (15 s state, 20 s status/probes,
 faster while a toggle is in flight). Sections whose data is absent hide
 themselves (no usage file → no meters, no `pinned` → single-column top row,

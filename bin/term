@@ -30,6 +30,24 @@ if [ "$name" = home ] || [ "$name" = "~" ]; then
     exec tmux attach -t home
 fi
 
+# "pane:<n>": attach to an existing tmux pane %<n> (the session list on the
+# dashboard links every agent this way). Only digits are accepted and the pane
+# must already exist - this opens what runs, it never starts anything. A
+# grouped session (new-session -t) is used so the other clients of that
+# session keep their own current window; it dies with the browser tab.
+if [[ "$name" == pane:* ]]; then
+    id="${name#pane:}"
+    if [[ "$id" =~ ^[0-9]+$ ]] && sess=$(tmux display -p -t "%$id" '#{session_name}' 2>/dev/null); then
+        win=$(tmux display -p -t "%$id" '#{window_id}')
+        exec tmux new-session -t "$sess" \; set-option destroy-unattached on \
+            \; select-window -t "$win" \; select-pane -t "%$id"
+    fi
+    echo "That session is gone (pane %$id no longer exists)."; echo
+    list; echo
+    echo "Continuing with a plain shell."; echo
+    exec bash -l
+fi
+
 if ! jq -e --arg n "$name" '.projects[] | select(.name==$n)' "$REG" >/dev/null 2>&1; then
     echo "Unknown project: '$name'"; echo
     list; echo

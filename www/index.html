@@ -308,6 +308,66 @@
     .pinbox.send.open .row{margin-top:10px}
   }
 
+  /* ---- sezeni Claude ---- */
+  /* Prehled vsech bezicich Claude Code sezeni (data z /ctl/sessions). Stav
+     nese slovo a tvar tecky (pulzuje = pracuje), ne jen barva. Sezeni, ktera
+     stoji dele nez STALE_H hodin, jsou sbalena a ztlumena dole. */
+  .sessions{margin-top:18px}
+  .sessions[hidden]{display:none}
+  .sess-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+  .sess-head h2{margin:0}
+  .sess-head .cnt{color:var(--text2);font-size:13px;font-variant-numeric:tabular-nums}
+  .sgrid{display:grid;gap:12px;margin-top:14px;align-items:start;
+         grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr))}
+  .sgrid:empty{display:none}
+  .sess-empty{color:var(--muted);font-size:13px;margin-top:10px}
+  .scard{border:1px solid var(--border);border-radius:10px;padding:12px 14px;
+         display:flex;flex-direction:column;gap:6px;min-width:0;background:var(--bg)}
+  .scard.work{border-color:var(--claude)}
+  .scard .top{display:flex;align-items:center;gap:8px;min-width:0;font-size:12.5px}
+  .scard .st{display:flex;align-items:center;gap:6px;color:var(--text2);
+             white-space:nowrap;font-variant-numeric:tabular-nums}
+  .scard .sdot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+  .scard.work .sdot{background:var(--claude);animation:swpulse 1.2s ease-in-out infinite}
+  .scard.work .st{color:var(--text);font-weight:500}
+  .scard .proj{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .scard .sterm{margin-left:auto;flex:0 0 auto;color:var(--accent);text-decoration:none;
+                font-weight:500;padding:3px 9px;border:1px solid var(--accent);border-radius:6px}
+  .scard .sterm:hover{background:var(--accent);color:var(--card)}
+  .scard .ttl{font-weight:600;font-size:14.5px;line-height:1.35;overflow-wrap:anywhere}
+  /* prompt a odpoved jsou orezane na par radku; klik rozbali */
+  .scard .q,.scard .a{font-size:13px;line-height:1.45;overflow-wrap:anywhere;
+                      white-space:pre-wrap;cursor:pointer;
+                      display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden}
+  .scard .q{-webkit-line-clamp:2;color:var(--text)}
+  .scard .a{-webkit-line-clamp:3;color:var(--text2)}
+  .scard .q::before{content:"› ";color:var(--muted)}
+  .scard.open .q,.scard.open .a{-webkit-line-clamp:unset;display:block}
+  .scard .sum{font-size:13px;line-height:1.45;padding:7px 10px;border-radius:7px;
+              background:var(--chip);color:var(--text)}
+  .scard .sum .ago{color:var(--muted);font-size:12px;white-space:nowrap}
+  .scard .sum.err{color:var(--crit)}
+  .scard .foot{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--muted)}
+  .scard .foot .cwd{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;
+                    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+  .scard .sumbtn{margin-left:auto;flex:0 0 auto;appearance:none;font:inherit;font-size:12px;
+                 cursor:pointer;padding:3px 9px;border:1px solid var(--border);border-radius:6px;
+                 background:none;color:var(--text2)}
+  .scard .sumbtn:hover{border-color:var(--accent);color:var(--accent)}
+  .scard .sumbtn[disabled]{cursor:progress;opacity:.6}
+  .scard .sumbtn:focus-visible,.scard .sterm:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  /* stara sezeni: sbalena, ztlumena */
+  .sold{margin-top:14px;font-size:13px;color:var(--text2)}
+  .sold summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:7px;
+                width:max-content;-webkit-user-select:none;user-select:none}
+  .sold summary::-webkit-details-marker{display:none}
+  .sold summary::before{content:"▸";color:var(--muted);font-size:11px;transition:transform .15s}
+  .sold[open] summary::before{transform:rotate(90deg)}
+  .sold summary:hover{color:var(--text)}
+  .sold .scard{opacity:.62}
+  .sold .scard:hover,.sold .scard:focus-within{opacity:1}
+  @media (prefers-reduced-motion:reduce){ .scard.work .sdot{animation:none} }
+
   /* ---- prohlizec souboru (zalozka Soubory) ---- */
   .files{margin-top:18px}
   .files[hidden]{display:none}
@@ -401,6 +461,18 @@
   <!-- Pripnute projekty ("pinned": true v registru); plni renderPinned() -->
   <div id="pinned"></div>
   </div>
+
+  <!-- Bezici Claude sezeni; plni se z /ctl/sessions (fractal-ctl, jen tailnet) -->
+  <section class="card sessions" id="sessions" hidden>
+    <div class="sess-head"><h2>Sezení Claude</h2><span class="cnt" id="sess-cnt"></span></div>
+    <div class="swerr" id="sess-err"></div>
+    <div class="sgrid" id="sess-live"></div>
+    <div class="sess-empty" id="sess-empty" hidden>Nic se teď nedělá.</div>
+    <details class="sold" id="sess-old" hidden>
+      <summary id="sess-old-sum"></summary>
+      <div class="sgrid" id="sess-old-list"></div>
+    </details>
+  </section>
 
   <!-- Zalozky skupin; plni se z "groups" v /projects.json -->
   <nav class="tabs" id="tabs" role="tablist" aria-label="Skupiny projektů"></nav>
@@ -1277,6 +1349,135 @@ window.addEventListener("drop", e => {
 });
 
 refreshUploads();
+
+/* ---------------- sezeni Claude ---------------- */
+/* Vsechna bezici Claude Code sezeni na stroji: stav (pracuje / ceka), jak dlouho, posledni prompt a odpoved. Data dava fractal-ctl
+   (/ctl/sessions) - cte ~/.claude/sessions/*.json a konec transkriptu, zadne
+   tokeny. Shrnuti modelem jen na vyzadani tlacitkem.
+   Pres /ctl, ne jako staticky JSON: prompty jsou osobni obsah a /ctl je
+   v nginxu omezene na tailnet. */
+
+const STALE_H = 6;                         // idle dele nez tohle -> sbalena sekce
+const SESS_STATE = {
+  busy:  {work: true,  t: "pracuje"},
+  // "shell": tah skoncil, jen na pozadi jeste bezi shell (Bash s run_in_background)
+  shell: {work: false, t: "čeká · shell na pozadí"},
+  idle:  {work: false, t: "čeká"},
+};
+const sessOpen = new Set();                // rozbalene karty (prezije prekresleni)
+let sessTimer = null;
+
+// cesky tvar slovesa: 2-4 v mnoznem cisle, jinak (1, 0, 5+) jednotne
+const cz = (n, one, few) => n >= 2 && n <= 4 ? few : one;
+function ago(s) { return s < 60 ? "<1 min" : dur(s); }
+
+function sessCard(x, now) {
+  const st = SESS_STATE[x.status] || {work: false, t: x.status};
+  const c = el("div", "scard" + (st.work ? " work" : "") + (sessOpen.has(x.sessionId) ? " open" : ""));
+
+  const top = el("div", "top");
+  const s = el("span", "st");
+  s.append(el("span", "sdot"), `${st.t} · ${ago(now - x.since)}`);
+  const proj = el("span", "proj");
+  proj.textContent = x.project || x.tmux || "~";
+  top.append(s, proj);
+  if (x.pane) {
+    const a = el("a", "sterm");
+    a.href = "/term/?arg=" + encodeURIComponent("pane:" + x.pane);
+    a.target = "term-pane-" + x.pane; a.rel = "noopener";
+    a.textContent = "▸ Terminál";
+    a.title = `tmux ${x.tmux}, pane %${x.pane}`;
+    top.appendChild(a);
+  }
+  c.appendChild(top);
+
+  const ttl = el("div", "ttl");
+  ttl.textContent = x.title || x.name || "(bez názvu)";
+  c.appendChild(ttl);
+
+  const toggleOpen = () => {
+    sessOpen.has(x.sessionId) ? sessOpen.delete(x.sessionId) : sessOpen.add(x.sessionId);
+    c.classList.toggle("open");
+  };
+  if (x.prompt) { const q = el("div", "q"); q.textContent = x.prompt; q.title = "rozbalit"; q.onclick = toggleOpen; c.appendChild(q); }
+  if (x.answer) { const a = el("div", "a"); a.textContent = x.answer; a.title = "rozbalit"; a.onclick = toggleOpen; c.appendChild(a); }
+
+  if (x.summaryError) {
+    const e = el("div", "sum err"); e.textContent = "Shrnutí selhalo: " + x.summaryError; c.appendChild(e);
+  } else if (x.summary && x.summary.text) {
+    const m = el("div", "sum");
+    const t = el("span", "ago"); t.textContent = ` · před ${ago(now - x.summary.at)}`;
+    m.append("✦ " + x.summary.text, t);
+    c.appendChild(m);
+  }
+
+  const foot = el("div", "foot");
+  const cwd = el("span", "cwd"); cwd.textContent = x.cwd; cwd.title = x.name;
+  const b = el("button", "sumbtn"); b.type = "button";
+  b.disabled = x.summarizing;
+  b.textContent = x.summarizing ? "shrnuji…" : (x.summary ? "shrň znovu" : "✦ shrň");
+  b.title = "shrnutí jednou větou (claude -p, malý model)";
+  b.onclick = () => sessSummary(x.sessionId, b);
+  foot.append(cwd, b);
+  c.appendChild(foot);
+  return c;
+}
+
+async function sessSummary(sid, btn) {
+  btn.disabled = true; btn.textContent = "shrnuji…";
+  try {
+    const r = await fetch(`${CTL}/sessions/${encodeURIComponent(sid)}/summary`, {method: "POST"});
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "HTTP " + r.status);
+  } catch (e) {
+    btn.disabled = false; btn.textContent = "✦ shrň";
+    document.getElementById("sess-err").textContent = "Shrnutí nešlo spustit: " + e.message;
+  }
+  scheduleSess(1500);
+}
+
+function scheduleSess(ms) { clearTimeout(sessTimer); sessTimer = setTimeout(loadSessions, ms); }
+
+async function loadSessions() {
+  const sec = document.getElementById("sessions");
+  let d;
+  try {
+    const r = await fetch(CTL + "/sessions", {cache: "no-store"});
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    d = await r.json();
+  } catch (e) {
+    // mimo tailnet /ctl vraci 403 - sekce proste neni, zbytek stranky bezi
+    sec.hidden = true;
+    scheduleSess(60000);
+    return;
+  }
+  sec.hidden = false;
+  document.getElementById("sess-err").textContent = "";
+  const now = d.now || Date.now() / 1000;
+  const all = d.sessions || [];
+  const isOld = x => !(SESS_STATE[x.status] || {}).work && now - x.since > STALE_H * 3600;
+  // nahore to, co pracuje, pak podle posledni zmeny
+  const live = all.filter(x => !isOld(x))
+    .sort((a, b) => ((SESS_STATE[b.status] || {}).work - (SESS_STATE[a.status] || {}).work) || b.since - a.since);
+  const old = all.filter(isOld);
+
+  document.getElementById("sess-live").replaceChildren(...live.map(x => sessCard(x, now)));
+  document.getElementById("sess-empty").hidden = live.length > 0;
+  const oldBox = document.getElementById("sess-old");
+  oldBox.hidden = old.length === 0;
+  document.getElementById("sess-old-sum").textContent =
+    `${old.length} ${old.length < 5 ? "starší sezení" : "starších sezení"} — nic se neděje přes ${STALE_H} h`;
+  document.getElementById("sess-old-list").replaceChildren(...old.map(x => sessCard(x, now)));
+
+  const working = all.filter(x => (SESS_STATE[x.status] || {}).work).length;
+  document.getElementById("sess-cnt").textContent =
+    `${working} ${cz(working, "pracuje", "pracují")} · ${all.length - working} ${cz(all.length - working, "čeká", "čekají")}`;
+
+  // behem prace nebo shrnovani casteji, jinak staci jednou za 20 s
+  scheduleSess(all.some(x => x.summarizing) ? 2000 : working ? 8000 : 20000);
+}
+
+loadSessions();
+document.addEventListener("visibilitychange", () => { if (!document.hidden) scheduleSess(0); });
 
 /* ---------------- stroj ---------------- */
 const GB = 1024 ** 3;
