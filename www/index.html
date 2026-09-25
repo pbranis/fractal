@@ -315,88 +315,78 @@
 
   /* ---- sezeni Claude ---- */
   /* Prehled vsech bezicich Claude Code sezeni (data z /ctl/sessions). Stav
-     nese slovo a tvar tecky (pulzuje = pracuje), ne jen barva. Sezeni, ktera
-     stoji dele nez STALE_H hodin, jsou sbalena a ztlumena dole. */
-  .sessions{margin-top:18px}
+     nese slovo a tvar tecky (pulzuje = pracuje, ctverecek = chce odpoved),
+     ne jen barva. Sezeni, ktera stoji dele nez STALE_H hodin, jsou sbalena
+     a ztlumena dole. Hustota je zamerna: na monitoru ma byt videt co nejvic. */
+  .sessions{margin-top:18px;padding:14px 16px}
   .sessions[hidden]{display:none}
   .sess-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
   .sess-head h2{margin:0}
   .sess-head .cnt{color:var(--text2);font-size:13px;font-variant-numeric:tabular-nums}
-  .sgrid{display:grid;gap:12px;margin-top:14px;align-items:start;
-         grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr))}
-  .sgrid:empty{display:none}
-  .sess-empty{color:var(--muted);font-size:13px;margin-top:10px}
-  .scard{border:1px solid var(--border);border-radius:10px;padding:12px 14px;
-         display:flex;flex-direction:column;gap:6px;min-width:0;background:var(--bg)}
-  .scard.work{border-color:var(--claude)}
-  .scard .top{display:flex;align-items:center;gap:8px;min-width:0;font-size:12.5px}
-  .scard .st{display:flex;align-items:center;gap:6px;color:var(--text2);
-             white-space:nowrap;font-variant-numeric:tabular-nums}
-  .scard .sdot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+  .sess-empty{color:var(--muted);font-size:13px;margin-top:8px}
+  /* Projekty teku do sloupcu (masonry pres CSS columns): blok projektu se
+     nerozdeli, sloupce se plni shora dolu v poradi skupina -> projekt. */
+  #sess-live,#sess-old-list{columns:270px;column-gap:12px}
+  #sess-live:not(:empty){margin-top:10px}
+  .sproj{break-inside:avoid;margin-bottom:10px;display:flex;flex-direction:column;gap:4px}
+  .sph{display:flex;align-items:center;gap:6px;min-width:0;margin-bottom:1px}
+  .sph .sgh{font-size:10.5px;font-weight:600;color:var(--muted);text-transform:uppercase;
+            letter-spacing:.05em;white-space:nowrap}
+  .sph .note{font-size:11.5px;white-space:nowrap}
+  .scard{border:1px solid var(--border);border-left:4px solid hsl(var(--h,0) var(--pline));
+         border-radius:7px;padding:5px 8px 6px;min-width:0;background:var(--bg);
+         display:flex;flex-direction:column;gap:2px;font-size:12.5px;line-height:1.4}
+  .scard.nohue{border-left-color:var(--border)}
+  .scard.work{border-color:var(--claude);border-left-color:hsl(var(--h,0) var(--pline))}
+  .scard.work.nohue{border-left-color:var(--claude)}
+  .scard .top{display:flex;align-items:center;gap:6px;min-width:0}
+  .scard .sdot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:0 0 auto}
   .scard.work .sdot{background:var(--claude);animation:swpulse 1.2s ease-in-out infinite}
-  .scard.work .st{color:var(--text);font-weight:500}
   /* chce odpoved (otazka / povoleni): tecka ve tvaru ctverecku + tucne slovo */
   .scard.ask .sdot{background:var(--warn);border-radius:2px}
+  .scard .ttl{flex:1;min-width:0;font-weight:600;font-size:13px;
+              overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .scard .st{flex:0 0 auto;color:var(--muted);font-size:11.5px;white-space:nowrap;
+             font-variant-numeric:tabular-nums}
+  .scard.work .st{color:var(--text);font-weight:500}
   .scard.ask .st{color:var(--text);font-weight:600}
-  /* skupiny a projekty: skupina = drobny nadpis, projekt = barevny stitek,
-     pod nim jeho sezeni; karty sezeni nesou pruh v barve projektu */
-  /* skupiny i projekty v nich teku vedle sebe; sirka roste s poctem sezeni
-     (--n), takze skupina s jednim sezenim nezabere cely radek */
-  #sess-live,#sess-old-list{display:flex;flex-wrap:wrap;gap:20px 28px;align-items:flex-start}
-  #sess-live:not(:empty){margin-top:14px}
-  .sgroup{flex:1 1 calc(var(--n) * 350px);min-width:min(100%,320px);max-width:100%}
-  .sgbody{display:flex;flex-wrap:wrap;gap:12px 18px;align-items:flex-start}
-  .sproj{flex:1 1 calc(var(--n) * 350px);min-width:min(100%,320px);max-width:100%}
-  .sgh{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--muted);
-       text-transform:uppercase;letter-spacing:.05em}
-  .sph{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  .sph .note{font-size:12px}
-  .sproj > .sgrid{margin-top:8px}
-  .scard{border-left:4px solid hsl(var(--h,0) var(--pline))}
-  .scard.nohue{border-left-color:var(--border)}
-  .scard.work{border-left-color:hsl(var(--h,0) var(--pline))}
-  .scard.work.nohue{border-left-color:var(--claude)}
-  .scard .sterm{margin-left:auto;flex:0 0 auto;color:var(--accent);text-decoration:none;
-                font-weight:500;padding:3px 9px;border:1px solid var(--accent);border-radius:6px}
-  .scard .sterm:hover{background:var(--accent);color:var(--card)}
-  .scard .ttl{font-weight:600;font-size:14.5px;line-height:1.35;overflow-wrap:anywhere}
-  /* prompt a odpoved jsou orezane na par radku; klik rozbali */
-  .scard .q,.scard .a{font-size:13px;line-height:1.45;overflow-wrap:anywhere;
-                      white-space:pre-wrap;cursor:pointer;
+  /* male ikonove akce v hlavicce karty */
+  .scard .ib{flex:0 0 auto;appearance:none;font:inherit;font-size:11.5px;line-height:1;
+             cursor:pointer;padding:3px 6px;border:1px solid var(--border);border-radius:5px;
+             background:none;color:var(--text2);text-decoration:none}
+  .scard .ib:hover{border-color:var(--accent);color:var(--accent)}
+  .scard a.ib{border-color:var(--accent);color:var(--accent)}
+  .scard a.ib:hover{background:var(--accent);color:var(--card)}
+  .scard .ib[disabled]{cursor:progress;opacity:.55}
+  .scard .ib:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  /* prompt 1 radek, odpoved/shrnuti 2 radky; klik rozbali */
+  .scard .q,.scard .a{overflow-wrap:anywhere;white-space:pre-wrap;cursor:pointer;
                       display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden}
-  .scard .q{-webkit-line-clamp:2;color:var(--text)}
-  .scard .a{-webkit-line-clamp:3;color:var(--text2)}
+  .scard .q{-webkit-line-clamp:1;color:var(--text)}
+  .scard .a{-webkit-line-clamp:2;color:var(--text2)}
   .scard .q::before{content:"› ";color:var(--muted)}
+  .scard .a.sum{color:var(--text)}
+  .scard .a.sum::before{content:"✦ ";color:hsl(var(--h,30) var(--pline))}
+  .scard .a.err{color:var(--crit)}
+  .scard .ago{color:var(--muted);font-size:11px;white-space:nowrap}
+  .scard .a.alt{display:none}
   .scard.open .q,.scard.open .a{-webkit-line-clamp:unset;display:block}
-  .scard .sum{font-size:13px;line-height:1.45;padding:7px 10px;border-radius:7px;
-              background:var(--chip);color:var(--text)}
-  .scard .sum .ago{color:var(--muted);font-size:12px;white-space:nowrap}
-  .scard .sum.err{color:var(--crit)}
-  .scard .foot{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--muted)}
-  .scard .foot .cwd{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;
-                    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
-  .scard .sumbtn{margin-left:auto;flex:0 0 auto;appearance:none;font:inherit;font-size:12px;
-                 cursor:pointer;padding:3px 9px;border:1px solid var(--border);border-radius:6px;
-                 background:none;color:var(--text2)}
-  .scard .sumbtn:hover{border-color:var(--accent);color:var(--accent)}
-  .scard .sumbtn[disabled]{cursor:progress;opacity:.6}
-  .scard .sumbtn:focus-visible,.scard .sterm:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* stara sezeni: sbalena, ztlumena */
-  .sold{margin-top:14px;font-size:13px;color:var(--text2)}
+  .sold{margin-top:6px;font-size:13px;color:var(--text2)}
   .sold summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:7px;
                 width:max-content;-webkit-user-select:none;user-select:none}
   .sold summary::-webkit-details-marker{display:none}
   .sold summary::before{content:"▸";color:var(--muted);font-size:11px;transition:transform .15s}
   .sold[open] summary::before{transform:rotate(90deg)}
   .sold summary:hover{color:var(--text)}
-  .sold #sess-old-list{margin-top:12px}
-  .sold .sgroup{opacity:.62}
-  .sold .sgroup:hover,.sold .sgroup:focus-within{opacity:1}
+  .sold #sess-old-list{margin-top:10px}
+  .sold .sproj{opacity:.62}
+  .sold .sproj:hover,.sold .sproj:focus-within{opacity:1}
   @media (prefers-reduced-motion:reduce){ .scard.work .sdot{animation:none} }
 
-  .ptag{display:inline-flex;align-items:center;gap:6px;max-width:100%;
-        padding:3px 11px;border-radius:999px;font-size:13px;font-weight:650;
-        line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  .ptag{display:inline-flex;align-items:center;gap:6px;max-width:100%;min-width:0;
+        padding:1px 9px;border-radius:999px;font-size:12.5px;font-weight:650;
+        line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
         background:hsl(var(--h,0) var(--ptag-bg));color:hsl(var(--h,0) var(--ptag-fg))}
   .ptag.nohue{background:var(--chip);color:var(--text2)}
   /* karta projektu: pruh vlevo ve stejne barve jako stitek jeho sezeni */
@@ -1402,7 +1392,7 @@ const STALE_H = 6;                         // idle dele nez tohle -> sbalena sek
 const SESS_STATE = {
   busy:  {work: true,  t: "pracuje"},
   // "shell": tah skoncil, jen na pozadi jeste bezi shell (Bash s run_in_background)
-  shell: {work: false, t: "čeká · shell na pozadí"},
+  shell: {work: false, t: "čeká", hint: "tah skončil, na pozadí ještě běží shell"},
   idle:  {work: false, t: "čeká"},
   // "waiting": sezeni se na neco pta (otazka, povoleni) - blokuje ho uzivatel
   waiting: {work: false, ask: true, t: "chce odpověď"},
@@ -1440,32 +1430,28 @@ function sessGrouped(list, now) {
     if (!pm.has(key)) pm.set(key, []);
     pm.get(key).push(x);
   }
+  // ploche poradi blok za blokem (sloupce je skladaji shora dolu): skupiny
+  // podle nejzivejsiho sezeni, v nich projekty totez; skupina je na prvnim
+  // bloku, dalsi bloky te skupiny ji uz neopakuji
   const out = [];
   const gs = [...groups].sort((a, b) => rank([...b[1].values()].flat()) - rank([...a[1].values()].flat()));
   for (const [g, pm] of gs) {
-    const gbox = el("div", "sgroup");
-    gbox.style.setProperty("--n", [...pm.values()].flat().length);
-    const h = el("h3", "sgh"); h.textContent = g;
-    const body = el("div", "sgbody");
-    gbox.append(h, body);
+    let first = true;
     for (const [key, xs] of [...pm].sort((a, b) => rank(b[1]) - rank(a[1]))) {
       xs.sort((a, b) => isWork(b) - isWork(a) || b.since - a.since);
       const pi = PROJ.get(key);
       const box = el("div", "sproj");
-      box.style.setProperty("--n", xs.length);
       const head = el("div", "sph");
+      if (first) { const h = el("span", "sgh"); h.textContent = g; head.appendChild(h); first = false; }
       const tag = el("span", "ptag");
       paintHue(tag, pi ? key : null);
       tag.textContent = pi ? pi.title : key;
-      tag.title = pi ? key : "";
+      tag.title = pi ? `${key} · skupina ${g}` : g;
       head.appendChild(tag);
-      if (xs.length > 1) { const n = el("span", "note"); n.textContent = `${xs.length} sezení`; head.appendChild(n); }
-      const grid = el("div", "sgrid");
-      grid.append(...xs.map(x => sessCard(x, now)));
-      box.append(head, grid);
-      body.appendChild(box);
+      if (xs.length > 1) { const n = el("span", "note"); n.textContent = `${xs.length}×`; head.appendChild(n); }
+      box.append(head, ...xs.map(x => sessCard(x, now)));
+      out.push(box);
     }
-    out.push(gbox);
   }
   return out;
 }
@@ -1474,64 +1460,69 @@ function sessGrouped(list, now) {
 const cz = (n, one, few) => n >= 2 && n <= 4 ? few : one;
 function ago(s) { return s < 60 ? "<1 min" : dur(s); }
 
+/* Kompaktni karta: [tecka] nazev ... stav cas [✦] [▸]
+                    › posledni prompt (1 radek)
+                    odpoved, nebo shrnuti kdyz je (2 radky)
+   Klik na text rozbali cely prompt, odpoved i shrnuti. */
 function sessCard(x, now) {
   const st = SESS_STATE[x.status] || {work: false, t: x.status};
   const c = el("div", "scard" + (st.work ? " work" : "") + (st.ask ? " ask" : "") + (sessOpen.has(x.sessionId) ? " open" : ""));
   paintHue(c, x.project);
 
   const top = el("div", "top");
+  const ttl = el("span", "ttl");
+  ttl.textContent = x.title || x.name || "(bez názvu)";
+  ttl.title = `${x.title || x.name}\n${x.cwd}` + (x.tmux ? `\ntmux ${x.tmux}` : "");
   const s = el("span", "st");
-  s.append(el("span", "sdot"), `${st.t} · ${ago(now - x.since)}`);
-  top.append(s);
+  // slovo jen u stavu, ktere chteji pozornost; obycejne cekani = seda tecka
+  // a cas (slovo zustava v tooltipu), at zbyde misto na nazev
+  s.textContent = (st.work || st.ask ? st.t + " " : "") + ago(now - x.since);
+  s.title = st.hint || st.t;
+  const b = el("button", "ib"); b.type = "button";
+  b.disabled = x.summarizing;
+  b.textContent = x.summarizing ? "…" : "✦";
+  b.title = x.summarizing ? "shrnuji…" : (x.summary ? "shrnout znovu" : "shrnout jednou větou (claude -p, malý model)");
+  b.setAttribute("aria-label", b.title);
+  b.onclick = () => sessSummary(x.sessionId, b);
+  top.append(el("span", "sdot"), ttl, s, b);
   if (x.pane) {
-    const a = el("a", "sterm");
+    const a = el("a", "ib");
     a.href = "/term/?arg=" + encodeURIComponent("pane:" + x.pane);
     a.target = "term-pane-" + x.pane; a.rel = "noopener";
-    a.textContent = "▸ Terminál";
-    a.title = `tmux ${x.tmux}, pane %${x.pane}`;
+    a.textContent = "▸";
+    a.title = `terminál: tmux ${x.tmux}, pane %${x.pane}`;
+    a.setAttribute("aria-label", a.title);
     top.appendChild(a);
   }
   c.appendChild(top);
-
-  const ttl = el("div", "ttl");
-  ttl.textContent = x.title || x.name || "(bez názvu)";
-  c.appendChild(ttl);
 
   const toggleOpen = () => {
     sessOpen.has(x.sessionId) ? sessOpen.delete(x.sessionId) : sessOpen.add(x.sessionId);
     c.classList.toggle("open");
   };
-  if (x.prompt) { const q = el("div", "q"); q.textContent = x.prompt; q.title = "rozbalit"; q.onclick = toggleOpen; c.appendChild(q); }
-  if (x.answer) { const a = el("div", "a"); a.textContent = x.answer; a.title = "rozbalit"; a.onclick = toggleOpen; c.appendChild(a); }
-
-  if (x.summaryError) {
-    const e = el("div", "sum err"); e.textContent = "Shrnutí selhalo: " + x.summaryError; c.appendChild(e);
-  } else if (x.summary && x.summary.text) {
-    const m = el("div", "sum");
+  const line = (cls, text) => {
+    const d = el("div", cls); d.textContent = text; d.onclick = toggleOpen; c.appendChild(d); return d;
+  };
+  if (x.prompt) line("q", x.prompt);
+  const sum = x.summary && x.summary.text;
+  if (x.summaryError) line("a err", "Shrnutí selhalo: " + x.summaryError);
+  if (sum) {
+    const m = line("a sum", x.summary.text);
     const t = el("span", "ago"); t.textContent = ` · před ${ago(now - x.summary.at)}`;
-    m.append("✦ " + x.summary.text, t);
-    c.appendChild(m);
+    m.appendChild(t);
   }
-
-  const foot = el("div", "foot");
-  const cwd = el("span", "cwd"); cwd.textContent = x.cwd; cwd.title = x.name;
-  const b = el("button", "sumbtn"); b.type = "button";
-  b.disabled = x.summarizing;
-  b.textContent = x.summarizing ? "shrnuji…" : (x.summary ? "shrň znovu" : "✦ shrň");
-  b.title = "shrnutí jednou větou (claude -p, malý model)";
-  b.onclick = () => sessSummary(x.sessionId, b);
-  foot.append(cwd, b);
-  c.appendChild(foot);
+  // se shrnutim je odpoved videt az po rozbaleni - na karte by byla navic
+  if (x.answer) line("a" + (sum ? " alt" : ""), x.answer);
   return c;
 }
 
 async function sessSummary(sid, btn) {
-  btn.disabled = true; btn.textContent = "shrnuji…";
+  btn.disabled = true; btn.textContent = "…";
   try {
     const r = await fetch(`${CTL}/sessions/${encodeURIComponent(sid)}/summary`, {method: "POST"});
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "HTTP " + r.status);
   } catch (e) {
-    btn.disabled = false; btn.textContent = "✦ shrň";
+    btn.disabled = false; btn.textContent = "✦";
     document.getElementById("sess-err").textContent = "Shrnutí nešlo spustit: " + e.message;
   }
   scheduleSess(1500);
