@@ -324,22 +324,31 @@
   .sess-head h2{margin:0}
   .sess-head .cnt{color:var(--text2);font-size:13px;font-variant-numeric:tabular-nums}
   .sess-empty{color:var(--muted);font-size:13px;margin-top:8px}
-  /* Projekty teku do sloupcu (masonry pres CSS columns): blok projektu se
-     nerozdeli, sloupce se plni shora dolu v poradi skupina -> projekt. */
-  #sess-live,#sess-old-list{columns:270px;column-gap:12px}
-  #sess-live:not(:empty){margin-top:10px}
-  .sproj{break-inside:avoid;margin-bottom:10px;display:flex;flex-direction:column;gap:4px}
-  .sph{display:flex;align-items:center;gap:6px;min-width:0;margin-bottom:1px}
+  /* Bloky projektu v mrizce: pevne sloupce, kazda rada zacina na stejne
+     vysce (ridi ji nejvyssi blok rady). Poradi zleva doprava, skupina ->
+     projekt. */
+  #sess-live,#sess-old-list{display:grid;gap:20px 18px;align-items:start;
+    grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr))}
+  #sess-live:not(:empty){margin-top:12px}
+  .sproj{min-width:0;display:flex;flex-direction:column;gap:6px}
+  .sph{display:flex;align-items:center;gap:7px;min-width:0}
+  .scards{display:flex;flex-direction:column;gap:6px}
+  /* projekt se 3+ sezenimi zabere dva sloupce a karty v nem jdou po dvou -
+     jinak by jeden projekt natahl celou radu do vysky */
+  @media (min-width:720px){
+    .sproj.wide{grid-column:span 2}
+    .sproj.wide .scards{display:grid;grid-template-columns:1fr 1fr;gap:6px 8px;align-items:start}
+  }
   .sph .sgh{font-size:10.5px;font-weight:600;color:var(--muted);text-transform:uppercase;
             letter-spacing:.05em;white-space:nowrap}
   .sph .note{font-size:11.5px;white-space:nowrap}
   .scard{border:1px solid var(--border);border-left:4px solid hsl(var(--h,0) var(--pline));
-         border-radius:7px;padding:5px 8px 6px;min-width:0;background:var(--bg);
-         display:flex;flex-direction:column;gap:2px;font-size:12.5px;line-height:1.4}
+         border-radius:8px;padding:8px 11px 9px;min-width:0;background:var(--bg);
+         display:flex;flex-direction:column;gap:4px;font-size:12.5px;line-height:1.45}
   .scard.nohue{border-left-color:var(--border)}
   .scard.work{border-color:var(--claude);border-left-color:hsl(var(--h,0) var(--pline))}
   .scard.work.nohue{border-left-color:var(--claude)}
-  .scard .top{display:flex;align-items:center;gap:6px;min-width:0}
+  .scard .top{display:flex;align-items:center;gap:7px;min-width:0}
   .scard .sdot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:0 0 auto}
   .scard.work .sdot{background:var(--claude);animation:swpulse 1.2s ease-in-out infinite}
   /* chce odpoved (otazka / povoleni): tecka ve tvaru ctverecku + tucne slovo */
@@ -1430,26 +1439,27 @@ function sessGrouped(list, now) {
     if (!pm.has(key)) pm.set(key, []);
     pm.get(key).push(x);
   }
-  // ploche poradi blok za blokem (sloupce je skladaji shora dolu): skupiny
-  // podle nejzivejsiho sezeni, v nich projekty totez; skupina je na prvnim
-  // bloku, dalsi bloky te skupiny ji uz neopakuji
+  // ploche poradi blok za blokem (mrizka je sklada po radach): skupiny podle
+  // nejzivejsiho sezeni, v nich projekty totez. Skupina je u kazdeho bloku -
+  // bloky jedne skupiny se mohou zalomit do dalsi rady.
   const out = [];
   const gs = [...groups].sort((a, b) => rank([...b[1].values()].flat()) - rank([...a[1].values()].flat()));
   for (const [g, pm] of gs) {
-    let first = true;
     for (const [key, xs] of [...pm].sort((a, b) => rank(b[1]) - rank(a[1]))) {
       xs.sort((a, b) => isWork(b) - isWork(a) || b.since - a.since);
       const pi = PROJ.get(key);
-      const box = el("div", "sproj");
+      const box = el("div", "sproj" + (xs.length >= 3 ? " wide" : ""));
       const head = el("div", "sph");
-      if (first) { const h = el("span", "sgh"); h.textContent = g; head.appendChild(h); first = false; }
+      const h = el("span", "sgh"); h.textContent = g; head.appendChild(h);
       const tag = el("span", "ptag");
       paintHue(tag, pi ? key : null);
       tag.textContent = pi ? pi.title : key;
       tag.title = pi ? `${key} · skupina ${g}` : g;
       head.appendChild(tag);
       if (xs.length > 1) { const n = el("span", "note"); n.textContent = `${xs.length}×`; head.appendChild(n); }
-      box.append(head, ...xs.map(x => sessCard(x, now)));
+      const cards = el("div", "scards");
+      cards.append(...xs.map(x => sessCard(x, now)));
+      box.append(head, cards);
       out.push(box);
     }
   }
