@@ -59,8 +59,9 @@
     .toprow{grid-template-columns:minmax(0,1fr) 300px;align-items:start}
     .toprow:has(#pinned:empty){grid-template-columns:1fr}
     /* v uzkem sloupci jdou akce pripnuteho projektu pod sebe, zarovnane doleva */
-    .toprow .pin-actions{grid-template-columns:1fr;gap:8px}
-    .toprow .pin-actions .term{justify-content:flex-start;padding:8px 12px}
+    /* v uzkem sloupci akce po dvou - pripnuta karta nema byt vyssi nez Stroj */
+    .toprow .pin-actions{grid-template-columns:1fr 1fr}
+    .toprow .pin-actions .term{justify-content:flex-start}
   }
   footer code{background:var(--chip);padding:1px 6px;border-radius:5px;font-size:13px}
   .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px}
@@ -144,6 +145,34 @@
     .machine.open .queue:empty{display:none}
   }
   .tiles{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin:0 0 4px}
+  /* Na desktopu je Stroj husty: mensi cisla, tenke metry, akce a predvolba
+     v jedne rade. Mobil ma vlastni sbaleny rezim (vyse). */
+  @media (min-width:721px){
+    .machine{padding:12px 16px}
+    .machine .tiles{gap:4px 18px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}
+    .machine .tile{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;padding:0}
+    .machine .tile .lbl{font-size:11px}
+    .machine .tile .val{font-size:18px;margin:0}
+    .machine .tile .val .unit{font-size:12px}
+    .machine .tile .note{font-size:11.5px;margin:0;flex-basis:100%;
+                         white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .machine .meters{gap:6px 20px;margin-top:8px;grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+    .machine .meter .top{gap:6px;margin-bottom:2px;min-width:0}
+    .machine .meter .name{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+    .machine .meter .num{font-size:12px;white-space:nowrap}
+    .machine .meter .state{font-size:11px;padding:0 5px;white-space:nowrap}
+    .machine .track{height:5px}
+    .machine .sysmeta{margin-top:8px;padding-top:6px;font-size:11.5px;gap:2px 14px}
+    .machine .dock{margin-top:2px;font-size:11.5px}
+    .machine .dock summary{padding:1px 0}
+    /* terminal, zkratky, nahravani a predvolba v jedne rade */
+    .machine .actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+    .machine .actions > *{flex:0 1 auto;width:auto;margin:0;padding:5px 11px;font-size:12.5px}
+    .machine .pref{margin-top:8px;padding-top:6px;gap:10px}
+    .machine .pref .preftxt{font-size:12.5px}
+    .machine .pref .preftxt .note{display:inline;margin-left:6px;font-size:11.5px}
+    .machine .pref .sw{transform:scale(.75);transform-origin:right center}
+  }
   @media (max-width:720px){ .machine.open .tiles{margin-top:16px} }
   .tile{padding:2px 0}
   .tile .lbl{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
@@ -311,6 +340,16 @@
       color:var(--text2);font:20px/1 system-ui;padding:6px 10px;cursor:pointer}
     .pinbox.send.open textarea{flex:1;min-height:0}
     .pinbox.send.open .row{margin-top:10px}
+  }
+
+  /* pripnuta karta na desktopu kompaktne, stejne jako Stroj */
+  @media (min-width:721px){
+    .pinned{padding:12px 14px}
+    .pinned h2{font-size:16px}
+    .pinned .desc{font-size:12px}
+    .pin-actions{gap:6px;margin-top:10px;grid-template-columns:repeat(auto-fit,minmax(120px,1fr))}
+    .pin-actions .term{padding:5px 9px;font-size:12.5px}
+    .hookrow{margin-top:4px;min-height:0}
   }
 
   /* ---- sezeni Claude ---- */
@@ -1605,6 +1644,10 @@ function level(v, warn, crit) {
   return {c:"var(--good)", t:"v pořádku"};
 }
 
+// Stitek stavu jen kdyz je co hlasit: "v poradku" je vychozi stav a u osmi
+// metru by jen zabiral misto. Zvysene / kriticke / zastarale slovo ma vzdy.
+const stateBadge = t => t === "v pořádku" ? "" : `<span class="state">${t}</span>`;
+
 function tile(lbl, val, unit, note, color) {
   return `<div class="tile">
     <div class="lbl">${lbl}</div>
@@ -1619,7 +1662,7 @@ function meter(name, used, total, unit, p, lv) {
   return `<div class="meter">
     <div class="top">
       <span class="name">${name}</span>
-      <span class="state">${lv.t}</span>
+      ${stateBadge(lv.t)}
       <span class="num">${used} / ${total} ${unit} · ${p} %</span>
     </div>
     <div class="track"><div class="fill" style="width:${Math.max(p, 1)}%;background:${lv.c}"></div></div>
@@ -1782,7 +1825,7 @@ async function loadClaude() {
     return `<div class="meter">
       <div class="top">
         <span class="name">${name}</span>
-        <span class="state">${state}</span>
+        ${stateBadge(state)}
         <span class="num">${l.percent} %${reset ? " · reset " + reset : ""}</span>
       </div>
       <div class="track"><div class="fill" style="width:${Math.max(l.percent, 1)}%;background:${stale ? "var(--muted)" : "var(--claude)"}"></div></div>
@@ -1831,7 +1874,7 @@ async function loadCodex() {
     return `<div class="meter">
       <div class="top">
         <span class="name">${name}</span>
-        <span class="state">${state}</span>
+        ${stateBadge(state)}
         <span class="num">${l.percent} %${reset ? " \u00b7 reset " + reset : ""}</span>
       </div>
       <div class="track"><div class="fill" style="width:${Math.max(l.percent, 1)}%;background:${stale ? "var(--muted)" : "var(--codex)"}"></div></div>
