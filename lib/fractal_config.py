@@ -39,6 +39,10 @@ DEFAULTS = {
     "FRACTAL_AGENT_WINDOW": "claude",
     # wireless interface for the Wi-Fi tile; empty = autodetect
     "FRACTAL_WIFI_IFACE": "",
+    # Telegram bot (optional): allowed numeric user IDs, token file, watch interval
+    "FRACTAL_TELEGRAM_USERS": "",
+    "FRACTAL_TELEGRAM_TOKEN_FILE": os.path.join(HOME, ".config", "fractal", "telegram-token"),
+    "FRACTAL_TELEGRAM_WATCH": "60",
 }
 
 _LINE = re.compile(r"""^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$""")

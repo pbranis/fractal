@@ -26,6 +26,9 @@ to add a project.
 - **Pinned projects** get a highlighted section with two extra boxes: *send*
   pastes text into the agent's tmux window, *ask* runs a headless query and
   streams the answer back. Buttons can run named commands from the registry.
+- **Telegram bot** (optional) with the same verbs: `/status`, `/start`,
+  `/stop`, `/run`, `/send`, `/ask` from your phone, plus a ping when a project
+  dies or comes back on its own. Long polling, so no public address is needed.
 - **Autostart with memory.** After a reboot only the projects that were
   running come back.
 - **Machine card:** load, temperature, memory, disk, Wi-Fi, docker containers,
@@ -44,6 +47,7 @@ the tailnet. The plain dashboard is visible from the LAN too.
  browser ──:80──▶ nginx ─┬─ /            static  index.html, projects.json, status.json
                          ├─ /term/       ttyd  ──▶ term ──▶ work <project> ──▶ tmux session
                          ├─ /ctl/        fractal-ctl     start/stop, agent send/ask, hooks
+                         │                  ▲  fractal-telegram (bot, long polling) is a second client
                          ├─ /files/      fractal-files   browse ~ (read + upload only)
                          └─ /upload/     fractal-upload  drop zone
                                                    ▲
@@ -121,12 +125,13 @@ the ones you will touch:
 | `FRACTAL_ALLOW` | CIDRs allowed to reach shells (`/term`, `/ctl`, `/files`, `/upload`). Default: Tailscale ranges |
 | `FRACTAL_WWW` | Web root, owned by you. Default `/var/www/fractal` |
 | `FRACTAL_AGENT`, `FRACTAL_AGENT_FLAGS` | What runs in the first tmux window. Default `claude --dangerously-skip-permissions` — read SECURITY.md |
+| `FRACTAL_TELEGRAM_USERS` | Telegram user IDs allowed to drive the bot; see [docs/configuration.md](docs/configuration.md#the-telegram-bot) |
 
 ## Layout
 
 ```
 bin/        fractal-ctl, fractal-files, fractal-upload, fractal-status, fractal-autostart,
-            project-register, work, term, fractal-claude-usage, fractal-codex-usage
+            fractal-telegram, project-register, work, term, fractal-claude-usage, fractal-codex-usage
 lib/        shared config loader (bash + python)
 www/        index.html (dashboard), docs.html (cheat sheet), termkeys.js (iOS key bar)
 nginx/      site template + snippets (core locations, tailnet-only, ttyd proxy)

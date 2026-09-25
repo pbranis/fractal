@@ -261,8 +261,11 @@ def agent_send(name: str, text: str) -> str | None:
     err = ensure_agent(name)
     if err:
         return err
-    prefix = project(name).get("sendPrefix") or ""
-    r = _tmux("load-buffer", "-b", "fractal-send", "-", text_in=prefix + text.strip())
+    # sendPrefix turns free text into e.g. "/braindump <text>"; text that is
+    # itself a slash command ("/daily-brief") is meant literally
+    text = text.strip()
+    prefix = "" if text.startswith("/") else (project(name).get("sendPrefix") or "")
+    r = _tmux("load-buffer", "-b", "fractal-send", "-", text_in=prefix + text)
     if r.returncode:
         return "load-buffer failed: " + r.stderr.strip()
     # -p = bracketed paste: newlines inside the text do NOT submit, Enter does

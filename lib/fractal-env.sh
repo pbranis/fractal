@@ -33,6 +33,9 @@ _fractal_default FRACTAL_AGENT        claude
 _fractal_default FRACTAL_AGENT_FLAGS  "--dangerously-skip-permissions"
 _fractal_default FRACTAL_AGENT_WINDOW claude
 _fractal_default FRACTAL_WIFI_IFACE   ""
+_fractal_default FRACTAL_TELEGRAM_USERS      ""
+_fractal_default FRACTAL_TELEGRAM_TOKEN_FILE "$HOME/.config/fractal/telegram-token"
+_fractal_default FRACTAL_TELEGRAM_WATCH      60
 
 FRACTAL_URL="${FRACTAL_URL%/}/"
 FRACTAL_REGISTRY="$FRACTAL_WWW/projects.json"

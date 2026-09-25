@@ -21,6 +21,9 @@ has a default; an absent file is not an error.
 | `FRACTAL_AGENT_FLAGS` | `--dangerously-skip-permissions` | appended to the agent command |
 | `FRACTAL_AGENT_WINDOW` | `claude` | tmux window name the agent lives in |
 | `FRACTAL_WIFI_IFACE` | *(autodetect)* | `fractal-status` |
+| `FRACTAL_TELEGRAM_USERS` | *(empty)* | `fractal-telegram`: numeric Telegram user IDs allowed to talk to the bot |
+| `FRACTAL_TELEGRAM_TOKEN_FILE` | `~/.config/fractal/telegram-token` | `fractal-telegram`, unit (`ConditionPathExists`) |
+| `FRACTAL_TELEGRAM_WATCH` | `60` | seconds between up/down checks that notify you; `0` = off |
 
 After changing ports or `FRACTAL_ALLOW`, run `./install.sh --nginx` so the
 snippets and units are re-rendered. After changing anything else,
@@ -36,6 +39,7 @@ touched).
 | registry | `$FRACTAL_WWW/projects.json` |
 | generated data | `$FRACTAL_WWW/status.json`, `claude-usage.json`, `codex-usage.json` |
 | autostart memory | `$FRACTAL_STATE_DIR/autostart.json` |
+| telegram | `$FRACTAL_TELEGRAM_TOKEN_FILE` (0600), `$FRACTAL_STATE_DIR/telegram-defaults.json`, optional `telegram-help.txt` |
 | user units | `~/.config/systemd/user/fractal-*.service|timer`, `<project>.service` |
 | nginx | `/etc/nginx/sites-available/fractal`, `/etc/nginx/snippets/fractal-*.conf` |
 
@@ -55,3 +59,28 @@ claude -c <flags> <claudeArgs> || claude <flags> <claudeArgs>; exec bash
 fall back to a shell when the agent exits so the window survives. Any other
 value is started as `<agent> <flags> <claudeArgs>; exec bash`; the headless
 "ask" box on pinned cards is claude-only.
+
+## The Telegram bot
+
+Optional. `fractal-telegram` is a second client of `fractal-ctl` next to the
+dashboard: `/status`, `/start <p>`, `/stop <p>`, `/run <p> [hook]`,
+`/send <p> <text>`, `/ask <p> <question>`, `/use <p>`. It long-polls the
+Bot API, so the machine needs no public address. Setup:
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`), copy
+   the token.
+2. `fractal-telegram configure <token>` writes it to
+   `FRACTAL_TELEGRAM_TOKEN_FILE` with mode 0600, then `./install.sh` enables
+   and starts `fractal-telegram.service`.
+3. Message the bot. While `FRACTAL_TELEGRAM_USERS` is empty it answers with
+   your numeric user ID and nothing else. Put the ID into `fractal.env`,
+   run `./install.sh` again.
+
+Plain text (no command) is a `/send` to the default project set with
+`/use`; with a `sendPrefix` in the registry the chat becomes a capture
+inbox. A file `$FRACTAL_STATE_DIR/telegram-help.txt` replaces the built-in
+`/help` text (`{url}` expands to `FRACTAL_URL`).
+
+Everyone not in `FRACTAL_TELEGRAM_USERS` is ignored. Groups are ignored.
+Read the Telegram section of SECURITY.md: the bot is a second door next to
+the tailnet, guarded by Telegram's login instead of the VPN.

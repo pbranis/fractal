@@ -52,6 +52,31 @@ That said: pasting text into an interactive coding agent that runs with
 permission prompts disabled **is** arbitrary code execution by design. It is
 the feature. It is why `/ctl` is tailnet-only.
 
+## The Telegram bot
+
+`fractal-telegram` is a **second door** that does not go through nginx or
+the tailnet. Its guard is Telegram's identity: the bot only acts on private
+messages from the numeric user IDs in `FRACTAL_TELEGRAM_USERS` and ignores
+everyone else. Everything it can do, it does via `fractal-ctl` on loopback,
+so it is limited to the same verbs as the browser (start/stop, hooks, text
+into the agent window, headless questions) - which, as above, includes
+"paste arbitrary instructions into an agent that runs unattended".
+
+What that means:
+
+- Whoever controls your Telegram account (or a phone with it logged in)
+  controls this machine. Use Telegram's two-step verification.
+- Whoever has the bot token can read the messages you send to the bot and
+  impersonate the bot towards you, but **cannot** issue commands: the bot
+  process on this machine is the only thing that acts, and it checks the
+  sender. Keep the token in the 0600 file anyway; revoke it in @BotFather
+  if it leaks.
+- While `FRACTAL_TELEGRAM_USERS` is empty the bot replies to anyone with
+  their own user ID. That is the only thing it does in that state.
+- Groups and channels are ignored; the bot works in private chats only.
+- Messages travel through Telegram's servers (not end-to-end encrypted for
+  bots). Do not `/send` secrets.
+
 ## The agent flags
 
 The default is

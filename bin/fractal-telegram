@@ -1,0 +1,590 @@
+#!/usr/bin/env python3
+"""Telegram bot for the dashboard: the same verbs as the web page, from a chat.
+
+The bot is just another client of fractal-ctl. It never runs a command
+itself: every message becomes a project name plus a verb, is validated
+against the registry (projects.json) and forwarded to the control backend on
+the loopback interface, exactly like the browser does. What the browser
+cannot do, the bot cannot do either.
+
+Why Telegram: the Bot API is free and works by LONG POLLING - the bot pulls
+updates from api.telegram.org, so a machine that is only reachable over a
+tailnet needs no public address, no webhook, no port forwarding.
+
+Access: only Telegram user IDs listed in FRACTAL_TELEGRAM_USERS get an
+answer. Everyone else is ignored (logged once per user). While the list is
+empty the bot answers ANY private message with the sender's numeric ID so the
+first user can put it into the config; nothing else works in that state.
+
+Commands (project = name from the registry):
+    /status                    up/down of every controllable project + machine
+    /projects                  all registered projects, what each can do
+    /start <project>           run the registry start command, report the result
+    /stop <project>            same for stop
+    /run <project> [hook]      run a named hook; without a hook: list them
+    /send <project> <text>     paste text into the project's agent tmux window
+    /ask <project> <question>  headless question; the answer is streamed into
+                               one message that is edited while it grows
+    /use <project>             remember a default project for this chat, after
+                               which /ask, /send, /run work without the name
+    /help                      built-in text, or $FRACTAL_STATE_DIR/telegram-help.txt
+                               if that file exists (write your own, in your language)
+    <plain text>               same as /send to the default project - with a
+                               sendPrefix in the registry (e.g. "/braindump ")
+                               the chat becomes a capture inbox
+
+Notifications: every FRACTAL_TELEGRAM_WATCH seconds (0 = off) the bot reads
+/ctl/state and tells every allowed user when a project changed between up
+and down without a start/stop being in flight - i.e. it died or came back on
+its own.
+
+Setup:
+    fractal-telegram configure <bot token>     writes the token file (0600)
+    fractal-telegram                           run (the systemd unit does this)
+
+The token lives in its own 0600 file (FRACTAL_TELEGRAM_TOKEN_FILE), not in
+fractal.env: that file is world-readable by convention and gets pasted into
+issues, tmux windows and agent contexts.
+"""
+import html
+import json
+import os
+import re
+import stat
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+from fractal_config import CFG, REGISTRY, STATE_DIR, URL, WWW, port  # noqa: E402
+
+API = "https://api.telegram.org/bot{token}/{method}"
+CTL = f"http://127.0.0.1:{port('CTL')}"
+TOKEN_FILE = CFG["FRACTAL_TELEGRAM_TOKEN_FILE"]
+USERS = {int(u) for u in re.split(r"[\s,]+", CFG["FRACTAL_TELEGRAM_USERS"].strip()) if u.isdigit()}
+WATCH = int(CFG["FRACTAL_TELEGRAM_WATCH"] or 0)
+DEFAULTS_FILE = os.path.join(STATE_DIR, "telegram-defaults.json")   # chat -> default project
+HELP_FILE = os.path.join(STATE_DIR, "telegram-help.txt")             # optional custom /help
+
+POLL_TIMEOUT = 50          # long poll; Telegram closes at 50 s anyway
+TOGGLE_WAIT = 60           # fractal-ctl waits 45 s for the port, add slack
+QUERY_WAIT = 600           # same as fractal-ctl QUERY_TIMEOUT
+HOOK_WAIT = 1800           # same as fractal-ctl HOOK_TIMEOUT
+EDIT_EVERY = 3.0           # seconds between edits of a streaming answer
+TG_MAX = 4000              # Telegram cuts at 4096; leave room for the cursor
+
+_token = ""
+_seen_strangers: set[int] = set()
+_defaults: dict[str, str] = {}
+_lock = threading.Lock()
+
+
+def log(*a) -> None:
+    print(*a, flush=True)
+
+
+# --- Telegram -----------------------------------------------------------------
+
+def tg(method: str, http_timeout: float = 30, **params) -> dict:
+    """One Bot API call. Returns the "result" or raises."""
+    body = json.dumps(params).encode()
+    req = urllib.request.Request(API.format(token=_token, method=method), data=body,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=http_timeout) as r:
+        data = json.load(r)
+    if not data.get("ok"):
+        raise RuntimeError(data.get("description") or "telegram error")
+    return data.get("result")
+
+
+def chunks(text: str, n: int = TG_MAX) -> list[str]:
+    out = []
+    while len(text) > n:
+        cut = text.rfind("\n", 0, n)
+        if cut < n // 2:
+            cut = n
+        out.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    return out + [text]
+
+
+def say(chat: int, text: str, mono: bool = False) -> int | None:
+    """Send plain text (or a <pre> block); long texts are split. Returns the
+    last message id, so a streaming answer can be edited afterwards."""
+    mid = None
+    for part in chunks(text):
+        if mono:
+            r = tg("sendMessage", chat_id=chat, text=f"<pre>{html.escape(part)}</pre>", parse_mode="HTML")
+        else:
+            r = tg("sendMessage", chat_id=chat, text=part)
+        mid = r.get("message_id")
+    return mid
+
+
+def edit(chat: int, mid: int, text: str) -> None:
+    try:
+        tg("editMessageText", chat_id=chat, message_id=mid, text=text[:TG_MAX + 90])
+    except RuntimeError as e:
+        if "not modified" not in str(e):
+            raise
+
+
+# --- fractal-ctl --------------------------------------------------------------
+
+def ctl(method: str, path: str, body: dict | None = None, timeout: float = 30) -> tuple[int, dict]:
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(CTL + path, data=data, method=method,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.load(e)
+        except Exception:                                     # noqa: BLE001
+            return e.code, {"error": str(e)}
+    except (urllib.error.URLError, OSError) as e:
+        return 0, {"error": f"fractal-ctl is not reachable ({e.reason if hasattr(e, 'reason') else e})"}
+
+
+def registry() -> list[dict]:
+    with open(REGISTRY, encoding="utf-8") as f:
+        return json.load(f).get("projects", [])
+
+
+def project(name: str) -> dict:
+    for p in registry():
+        if p.get("name") == name:
+            return p
+    return {}
+
+
+def controllable(p: dict) -> bool:
+    svc = p.get("service") or {}
+    return bool(svc.get("start") and svc.get("stop"))
+
+
+def machine_line() -> str:
+    try:
+        with open(os.path.join(WWW, "status.json"), encoding="utf-8") as f:
+            s = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    cpu, mem, disk = s.get("cpu") or {}, s.get("mem") or {}, s.get("disk") or {}
+    parts = []
+    if cpu.get("load"):
+        parts.append(f"load {cpu['load'][0]:.2f}")
+    if cpu.get("temp_c") is not None:
+        parts.append(f"{cpu['temp_c']} °C")
+    if mem.get("total"):
+        parts.append(f"mem {round(100 * mem.get('used', 0) / mem['total'])} %")
+    if disk.get("pct") is not None:
+        parts.append(f"disk {disk['pct']} %")
+    up = s.get("uptime_s")
+    if up:
+        parts.append(f"up {int(up // 86400)}d {int(up % 86400 // 3600)}h")
+    return "  ·  ".join(parts)
+
+
+# --- default project per chat -------------------------------------------------
+
+def load_defaults() -> None:
+    global _defaults
+    try:
+        with open(DEFAULTS_FILE, encoding="utf-8") as f:
+            _defaults = {str(k): str(v) for k, v in json.load(f).items()}
+    except (OSError, ValueError):
+        _defaults = {}
+
+
+def set_default(chat: int, name: str) -> None:
+    with _lock:
+        _defaults[str(chat)] = name
+        try:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(DEFAULTS_FILE, "w", encoding="utf-8") as f:
+                json.dump(_defaults, f, indent=1)
+        except OSError as e:
+            log(f"defaults: could not save: {e}")
+
+
+def pick_project(chat: int, args: list[str], need_rest: bool) -> tuple[dict, list[str], str]:
+    """(project, remaining args, error). The first word is the project if it
+    is a registered name; otherwise the chat's default project is used and
+    all words stay as arguments. need_rest: the command takes free text after
+    the name, so an unknown first word may be the start of that text."""
+    if args and project(args[0]):
+        return project(args[0]), args[1:], ""
+    d = _defaults.get(str(chat))
+    if d and project(d):
+        return project(d), args, ""
+    if args and not need_rest:
+        return {}, args, f"'{args[0]}' is not a registered project (/projects lists them)"
+    return {}, args, "which project? give its name first or set one with /use <project>"
+
+
+# --- commands -----------------------------------------------------------------
+
+HELP = """fractal bot
+
+/status – what is up, what is down
+/projects – every registered project
+/start <p> · /stop <p> – toggle a project's stack
+/run <p> [hook] – run a named action (no hook: list them)
+/send <p> <text> – paste text into the project's agent window (no answer here)
+/ask <p> <question> – headless question to the agent, answer comes back here
+/use <p> – default project for this chat, then omit <p> everywhere
+plain text – same as /send to the default project
+
+Dashboard: {url}"""
+
+
+def cmd_help(chat: int, _args: list[str]) -> None:
+    try:
+        with open(HELP_FILE, encoding="utf-8") as f:
+            text = f.read().strip()
+    except OSError:
+        text = HELP
+    say(chat, text.replace("{url}", URL))
+
+
+def cmd_status(chat: int, _args: list[str]) -> None:
+    code, data = ctl("GET", "/state")
+    if code != 200:
+        return say(chat, "✗ " + data.get("error", "no state"))
+    states = data.get("projects") or {}
+    titles = {p["name"]: p.get("title") or p["name"] for p in registry()}
+    lines = []
+    for name in sorted(states, key=lambda n: (not states[n]["up"], n)):
+        s = states[name]
+        if s.get("busy"):
+            mark, word = "◐", s["busy"] + "…"
+        elif s["up"]:
+            mark, word = "●", "up"
+        else:
+            mark, word = "○", "down"
+        last = s.get("last") or {}
+        note = f"   ⚠ {last['action']} failed" if last and last.get("ok") is False else ""
+        lines.append(f"{mark} {name:<14} {word}{note}")
+    if not lines:
+        lines.append("no controllable projects (none has service.start/stop)")
+    m = machine_line()
+    text = "\n".join(lines) + (f"\n\n{m}" if m else "")
+    say(chat, text, mono=True)
+
+
+def cmd_projects(chat: int, _args: list[str]) -> None:
+    d = _defaults.get(str(chat))
+    lines = []
+    for p in sorted(registry(), key=lambda p: (p.get("group") or "", p["name"])):
+        caps = []
+        if controllable(p):
+            caps.append("start/stop")
+        if p.get("hooks"):
+            caps.append("run: " + " ".join(sorted(p["hooks"])))
+        if p.get("terminal") is not False:
+            caps.append("agent")
+        star = "★ " if p["name"] == d else "  "
+        lines.append(f"{star}{p['name']:<14} {p.get('group') or ''}\n     {', '.join(caps) or '-'}")
+    say(chat, "\n".join(lines) or "registry is empty", mono=True)
+
+
+def cmd_use(chat: int, args: list[str]) -> None:
+    if not args:
+        d = _defaults.get(str(chat))
+        return say(chat, f"default project: {d}" if d else "no default project set; /use <project>")
+    if not project(args[0]):
+        return say(chat, f"'{args[0]}' is not a registered project")
+    set_default(chat, args[0])
+    say(chat, f"default project is now {args[0]}; /ask, /send and /run work without the name")
+
+
+def cmd_toggle(chat: int, args: list[str], action: str) -> None:
+    p, _rest, err = pick_project(chat, args, need_rest=False)
+    if err:
+        return say(chat, err)
+    name = p["name"]
+    if not controllable(p):
+        return say(chat, f"{name} has no start/stop command in the registry")
+    code, data = ctl("POST", f"/{name}/{action}")
+    if code == 409:
+        return say(chat, f"{name}: {data.get('error')}")
+    if code != 202:
+        return say(chat, f"✗ {name}: {data.get('error', code)}")
+    mid = say(chat, f"◐ {name}: {action}…")
+    deadline = time.monotonic() + TOGGLE_WAIT
+    while time.monotonic() < deadline:
+        time.sleep(1.5)
+        code, data = ctl("GET", "/state")
+        s = (data.get("projects") or {}).get(name) if code == 200 else None
+        if s and not s.get("busy"):
+            last = s.get("last") or {}
+            if last.get("ok"):
+                return edit(chat, mid, f"{'●' if s['up'] else '○'} {name} is {'up' if s['up'] else 'down'}")
+            return edit(chat, mid, f"✗ {name}: {action} failed\n{last.get('msg', '')}".strip())
+    edit(chat, mid, f"? {name}: still busy after {TOGGLE_WAIT} s, check /status later")
+
+
+def cmd_run(chat: int, args: list[str]) -> None:
+    p, rest, err = pick_project(chat, args, need_rest=False)
+    if err:
+        return say(chat, err)
+    name, hooks = p["name"], p.get("hooks") or {}
+    if not hooks:
+        return say(chat, f"{name} has no hooks")
+    if not rest:
+        return say(chat, f"{name} hooks: " + ", ".join(sorted(hooks)) + f"\n/run {name} <hook>")
+    hook = rest[0]
+    if hook not in hooks:
+        return say(chat, f"{name} has no hook '{hook}' (has: {', '.join(sorted(hooks))})")
+    code, data = ctl("POST", f"/run/{name}/{hook}")
+    if code == 409:
+        return say(chat, f"{name}/{hook}: already running")
+    if code != 202:
+        return say(chat, f"✗ {name}/{hook}: {data.get('error', code)}")
+    mid = say(chat, f"◐ {name}/{hook} running…")
+    deadline = time.monotonic() + HOOK_WAIT
+    while time.monotonic() < deadline:
+        time.sleep(2)
+        code, data = ctl("GET", f"/run/{name}/{hook}")
+        if code == 200 and not data.get("running"):
+            if data.get("ok"):
+                return edit(chat, mid, f"✓ {name}/{hook} done in {data.get('took', 0)} s")
+            return edit(chat, mid, f"✗ {name}/{hook} failed after {data.get('took', 0)} s\n{data.get('msg', '')}".strip())
+    edit(chat, mid, f"? {name}/{hook}: still running after {HOOK_WAIT // 60} min")
+
+
+def cmd_send(chat: int, args: list[str]) -> None:
+    p, rest, err = pick_project(chat, args, need_rest=True)
+    if err:
+        return say(chat, err)
+    text = "\n".join(rest).strip() if len(rest) == 1 else " ".join(rest).strip()
+    if not text:
+        return say(chat, f"/send {p['name']} <text>")
+    if p.get("terminal") is False:
+        return say(chat, f"{p['name']} has no agent window")
+    # blocks up to ~50 s when the tmux session has to be started first
+    code, data = ctl("POST", f"/agent/{p['name']}/send", {"text": text}, timeout=90)
+    if code == 200:
+        return say(chat, f"→ pasted into {p['name']} ({URL}term/?arg={p['name']})")
+    say(chat, f"✗ {p['name']}: {data.get('error', code)}")
+
+
+def cmd_ask(chat: int, args: list[str]) -> None:
+    p, rest, err = pick_project(chat, args, need_rest=True)
+    if err:
+        return say(chat, err)
+    q = " ".join(rest).strip()
+    if not q:
+        return say(chat, f"/ask {p['name']} <question>")
+    name = p["name"]
+    code, data = ctl("POST", f"/agent/{name}/query", {"q": q})
+    if code != 202:
+        return say(chat, f"✗ {name}: {data.get('error', code)}")
+    jid = data["id"]
+    mid = say(chat, f"◐ {name} is thinking…")
+    shown, last_edit = "", time.monotonic()
+    deadline = time.monotonic() + QUERY_WAIT
+    while time.monotonic() < deadline:
+        time.sleep(1)
+        code, j = ctl("GET", f"/agent/{name}/query/{jid}")
+        if code != 200:
+            return edit(chat, mid, f"✗ {name}: {j.get('error', code)}")
+        answer = (j.get("answer") or "").strip()
+        if j.get("done"):
+            final = answer or "(no answer)"
+            if not j.get("ok"):
+                final = "✗ " + final
+            parts = chunks(final)
+            edit(chat, mid, parts[0])
+            for extra in parts[1:]:
+                say(chat, extra)
+            return
+        # stream: edit the one message while the text grows, but not on every poll
+        if answer and answer != shown and time.monotonic() - last_edit >= EDIT_EVERY:
+            edit(chat, mid, answer[-TG_MAX:] + " ▍")
+            shown, last_edit = answer, time.monotonic()
+    edit(chat, mid, f"✗ {name}: no answer within {QUERY_WAIT // 60} min")
+
+
+COMMANDS = {
+    "help": cmd_help,
+    "status": cmd_status, "s": cmd_status,
+    "projects": cmd_projects, "list": cmd_projects,
+    "use": cmd_use,
+    "start": lambda c, a: cmd_toggle(c, a, "start"),
+    "stop": lambda c, a: cmd_toggle(c, a, "stop"),
+    "run": cmd_run,
+    "send": cmd_send,
+    "ask": cmd_ask,
+}
+
+MENU = [
+    ("status", "what is up and what is down"),
+    ("projects", "every registered project"),
+    ("start", "start a project: /start <p>"),
+    ("stop", "stop a project: /stop <p>"),
+    ("run", "run a named action: /run <p> [hook]"),
+    ("send", "paste text into the agent window"),
+    ("ask", "headless question to the agent"),
+    ("use", "default project for this chat"),
+    ("help", "command list"),
+]
+
+
+def handle(msg: dict) -> None:
+    chat = msg["chat"]["id"]
+    user = (msg.get("from") or {}).get("id")
+    text = (msg.get("text") or "").strip()
+    if msg["chat"].get("type") != "private" or user is None:
+        return                                                # groups are not supported
+    if not USERS:
+        # bootstrap: tell the sender their ID so it can be put into the config
+        say(chat, f"fractal bot is not configured yet.\n\nYour Telegram user ID is {user}.\n"
+                  f"Put it into FRACTAL_TELEGRAM_USERS in fractal.env and run ./install.sh.")
+        log(f"unconfigured: message from user {user}")
+        return
+    if user not in USERS:
+        if user not in _seen_strangers:
+            _seen_strangers.add(user)
+            log(f"ignored message from user {user} (not in FRACTAL_TELEGRAM_USERS)")
+        return
+    if not text.startswith("/"):
+        # plain text is a /send to the chat's default project; the first word
+        # is deliberately NOT parsed as a project name here - a thought that
+        # starts with "shop ..." must not land in the shop session
+        d = _defaults.get(str(chat))
+        if not (d and project(d)):
+            return say(chat, "no default project - set one with /use <project>, or use /send <project> <text>; /help")
+        return cmd_send(chat, [d, text])
+    words = text.split()
+    cmd = words[0][1:].split("@")[0].lower()       # "/ask@my_bot" in some clients
+    fn = COMMANDS.get(cmd)
+    if fn is None:
+        return say(chat, f"unknown command /{cmd} — /help")
+    if cmd == "start" and len(words) == 1:
+        return cmd_help(chat, [])                  # Telegram sends a bare /start on first open
+    try:
+        fn(chat, words[1:])
+    except Exception as e:                                    # noqa: BLE001
+        log(f"/{cmd} failed: {type(e).__name__}: {e}")
+        try:
+            say(chat, f"✗ {type(e).__name__}: {e}")
+        except Exception:                                     # noqa: BLE001
+            pass
+
+
+# --- watcher: tell about projects that die or come back ---------------------
+
+def watch() -> None:
+    prev: dict[str, bool] = {}
+    while True:
+        try:
+            code, data = ctl("GET", "/state")
+            if code == 200:
+                cur = {n: s["up"] for n, s in (data.get("projects") or {}).items() if not s.get("busy")}
+                for name, up in cur.items():
+                    if name in prev and prev[name] != up:
+                        text = f"{'● ' + name + ' is up again' if up else '○ ' + name + ' went down'}"
+                        log("watch: " + text)
+                        for uid in USERS:
+                            try:
+                                say(uid, text)
+                            except Exception as e:            # noqa: BLE001
+                                log(f"watch: could not notify {uid}: {e}")
+                # a project that vanished from the registry is simply forgotten
+                prev = {**{k: v for k, v in prev.items() if k in cur}, **cur}
+        except Exception as e:                                # noqa: BLE001
+            log(f"watch: {type(e).__name__}: {e}")
+        time.sleep(WATCH)
+
+
+# --- main loop ----------------------------------------------------------------
+
+def read_token() -> str:
+    t = os.environ.get("FRACTAL_TELEGRAM_TOKEN", "").strip()
+    if t:
+        return t
+    try:
+        st = os.stat(TOKEN_FILE)
+        if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+            log(f"warning: {TOKEN_FILE} is readable by others; chmod 600 it")
+        with open(TOKEN_FILE, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def configure(token: str) -> None:
+    if not re.fullmatch(r"\d+:[A-Za-z0-9_-]{30,}", token):
+        sys.exit("that does not look like a bot token (expected <digits>:<letters>, from @BotFather)")
+    os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
+    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(token + "\n")
+    os.chmod(TOKEN_FILE, 0o600)
+    print(f"token written to {TOKEN_FILE}")
+    print("next: ./install.sh  (enables fractal-telegram.service), then message the bot;")
+    print("      it answers with your user ID until FRACTAL_TELEGRAM_USERS is set.")
+
+
+def main() -> None:
+    global _token
+    if len(sys.argv) >= 2 and sys.argv[1] == "configure":
+        if len(sys.argv) != 3:
+            sys.exit("usage: fractal-telegram configure <bot token>")
+        return configure(sys.argv[2])
+    if len(sys.argv) >= 2:
+        sys.exit(__doc__)
+    _token = read_token()
+    if not _token:
+        sys.exit(f"no bot token: run `fractal-telegram configure <token>` (writes {TOKEN_FILE})")
+    load_defaults()
+
+    me = None
+    while me is None:
+        try:
+            me = tg("getMe")
+        except Exception as e:                                # noqa: BLE001
+            log(f"getMe failed ({type(e).__name__}: {e}); retrying in 15 s")
+            time.sleep(15)
+    log(f"bot @{me.get('username')} running; allowed users: {sorted(USERS) or 'NONE (bootstrap mode)'}")
+    try:
+        tg("setMyCommands", commands=[{"command": c, "description": d} for c, d in MENU])
+    except Exception as e:                                    # noqa: BLE001
+        log(f"setMyCommands: {e}")
+
+    # Drop whatever queued up while the bot was down: replaying an hour-old
+    # "/stop shop" after a restart is exactly what nobody wants.
+    offset = 0
+    try:
+        stale = tg("getUpdates", offset=-1, timeout=0)
+        if stale:
+            offset = stale[-1]["update_id"] + 1
+    except Exception as e:                                    # noqa: BLE001
+        log(f"getUpdates (drain): {e}")
+
+    if WATCH > 0 and USERS:
+        threading.Thread(target=watch, daemon=True).start()
+
+    while True:
+        try:
+            updates = tg("getUpdates", http_timeout=POLL_TIMEOUT + 10, offset=offset,
+                         limit=20, allowed_updates=["message"], timeout=POLL_TIMEOUT)
+        except Exception as e:                                # noqa: BLE001
+            log(f"getUpdates: {type(e).__name__}: {e}; retrying in 5 s")
+            time.sleep(5)
+            continue
+        for u in updates:
+            offset = max(offset, u["update_id"] + 1)
+            msg = u.get("message")
+            if msg:
+                # each command in its own thread: a 5-minute /ask must not block /status
+                threading.Thread(target=handle, args=(msg,), daemon=True).start()
+
+
+if __name__ == "__main__":
+    main()

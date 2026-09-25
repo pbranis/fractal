@@ -15,7 +15,8 @@
 #   4. renders systemd/user/* into ~/.config/systemd/user and (re)starts the
 #      core services: fractal-ctl, fractal-files, fractal-upload, fractal-term,
 #      fractal-status.timer, fractal-autostart; the usage timers only when the
-#      corresponding CLI (claude / codex) is installed
+#      corresponding CLI (claude / codex) is installed; fractal-telegram only
+#      when a bot token file exists (fractal-telegram configure <token>)
 #   5. with --nginx: renders the snippets into /etc/nginx/snippets/ and, when
 #      no site named "fractal" exists yet, installs one and reloads nginx
 #
@@ -48,8 +49,9 @@ fi
 . "$REPO/lib/fractal-env.sh"
 FRACTAL_TTYD="$(command -v ttyd || echo /usr/local/bin/ttyd)"
 export HOME USER FRACTAL_WWW FRACTAL_URL FRACTAL_ALLOW FRACTAL_UPLOADS FRACTAL_STATE_DIR \
-       FRACTAL_CTL_PORT FRACTAL_FILES_PORT FRACTAL_UPLOAD_PORT FRACTAL_TERM_PORT FRACTAL_TTYD
-VARS='${HOME} ${USER} ${FRACTAL_WWW} ${FRACTAL_URL} ${FRACTAL_UPLOADS} ${FRACTAL_STATE_DIR} ${FRACTAL_CTL_PORT} ${FRACTAL_FILES_PORT} ${FRACTAL_UPLOAD_PORT} ${FRACTAL_TERM_PORT} ${FRACTAL_TTYD} ${FRACTAL_ALLOW_LINES}'
+       FRACTAL_CTL_PORT FRACTAL_FILES_PORT FRACTAL_UPLOAD_PORT FRACTAL_TERM_PORT FRACTAL_TTYD \
+       FRACTAL_TELEGRAM_TOKEN_FILE
+VARS='${HOME} ${USER} ${FRACTAL_WWW} ${FRACTAL_URL} ${FRACTAL_UPLOADS} ${FRACTAL_STATE_DIR} ${FRACTAL_CTL_PORT} ${FRACTAL_FILES_PORT} ${FRACTAL_UPLOAD_PORT} ${FRACTAL_TERM_PORT} ${FRACTAL_TTYD} ${FRACTAL_ALLOW_LINES} ${FRACTAL_TELEGRAM_TOKEN_FILE}'
 render() { envsubst "$VARS" < "$1" > "$2"; }
 
 # --- dependencies ------------------------------------------------------------
@@ -82,6 +84,7 @@ say "bin: ~/.local/bin"
 mkdir -p "$HOME/.local/bin"
 BACKUP="$FRACTAL_STATE_DIR/backup-$(date +%Y%m%d-%H%M%S)"
 for f in "$REPO"/bin/*; do
+    [ -f "$f" ] || continue                     # skip __pycache__ and the like
     n="$(basename "$f")"; t="$HOME/.local/bin/$n"
     if [ -e "$t" ] && [ ! -L "$t" ]; then
         mkdir -p "$BACKUP"; mv "$t" "$BACKUP/"; note "backed up old $n to $BACKUP/"
@@ -116,6 +119,15 @@ for tool in claude codex; do
         systemctl --user disable --now "$u" >/dev/null 2>&1 || true
     fi
 done
+# telegram bot: only with a token; without one the unit would just restart-loop
+if [ -f "$FRACTAL_TELEGRAM_TOKEN_FILE" ]; then
+    systemctl --user enable fractal-telegram.service >/dev/null 2>&1 || true
+    systemctl --user restart fractal-telegram.service
+    note "fractal-telegram.service: $(systemctl --user is-active fractal-telegram.service)"
+    [ -z "$FRACTAL_TELEGRAM_USERS" ] && note "FRACTAL_TELEGRAM_USERS is empty - the bot only tells senders their ID"
+else
+    systemctl --user disable --now fractal-telegram.service >/dev/null 2>&1 || true
+fi
 # lingering keeps the user session (and the tmux server) alive without a login
 if command -v loginctl >/dev/null && ! loginctl show-user "$USER" 2>/dev/null | grep -q 'Linger=yes'; then
     note "enable lingering so the services survive logout/reboot: sudo loginctl enable-linger $USER"

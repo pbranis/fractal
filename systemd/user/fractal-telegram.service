@@ -1,0 +1,15 @@
+[Unit]
+Description=fractal: Telegram bot - the dashboard verbs from a chat (optional)
+After=network-online.target fractal-ctl.service
+Wants=network-online.target
+# install.sh enables this unit only when the token file exists
+ConditionPathExists=${FRACTAL_TELEGRAM_TOKEN_FILE}
+
+[Service]
+ExecStart=${HOME}/.local/bin/fractal-telegram
+Restart=always
+RestartSec=10
+Environment=PATH=${HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=default.target

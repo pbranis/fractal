@@ -16,6 +16,7 @@ read, on every request, by:
 | `bin/work` | `root`, `ctl`, `claudeArgs` to prepare and attach a tmux session |
 | `bin/term` | validates the `?arg=` project name before handing over to `work` |
 | `bin/fractal-ctl` | `service.start/stop/probe`, `hooks`, `sendPrefix` |
+| `bin/fractal-telegram` | validates project names; everything else goes through `fractal-ctl` |
 | `bin/fractal-autostart` | `service` to know which units to start at boot |
 
 The file is owned by the user, so a new project is a plain file write — no
@@ -56,6 +57,7 @@ never needs root.
 ```
 systemd --user
  ├─ fractal-ctl.service        long-running, restarts on failure
+ ├─ fractal-telegram.service   optional bot; only started when the token file exists
  ├─ fractal-files.service      long-running
  ├─ fractal-upload.service     long-running
  ├─ fractal-term.service       ttyd, long-running
@@ -120,7 +122,8 @@ Machine card instead of a tab card. Besides its links it gets:
   agent runs in tmux window `<p>:claude` (starting the session exactly the way
   `work` would), then `load-buffer` + `paste-buffer -p` the text (bracketed
   paste, so newlines do not submit) and presses Enter. An optional
-  `sendPrefix` (e.g. `/braindump `) is prepended.
+  `sendPrefix` (e.g. `/braindump `) is prepended, unless the text itself
+  starts with `/` - a slash command is meant literally.
 - **ask** — `POST /ctl/agent/<p>/query {q}` returns a job id; the server runs
   `claude -p --output-format stream-json` in the project directory and appends
   text deltas to the job; the page polls `GET .../query/<id>` and shows the
@@ -131,6 +134,24 @@ Machine card instead of a tab card. Besides its links it gets:
 
 None of this is specific to a "second brain"; that is just the first thing it
 was used for.
+
+## The Telegram bot
+
+`fractal-telegram` is the same client as the dashboard, minus the browser:
+`/start p` is `POST /ctl/p/start`, `/ask p q` is `POST /ctl/agent/p/query`
+followed by polling, `/run p h` is `POST /ctl/run/p/h`. It reads
+`projects.json` only to validate names and to list what a project can do;
+it never executes anything itself. The Bot API is long-polled
+(`getUpdates`, 50 s), so a tailnet-only machine needs no webhook. On start
+the backlog of updates is dropped: replaying a `/stop` from an hour ago is
+never what anyone wants. Each command runs in its own thread so a long
+`/ask` does not block `/status`. Plain text without a command is a `/send`
+to the chat's default project (`/use`), which with a `sendPrefix` makes the
+chat a capture inbox. `/help` shows `$FRACTAL_STATE_DIR/telegram-help.txt`
+when it exists, so an instance can carry its own text in its own language.
+A watcher thread compares `/ctl/state`
+snapshots and messages every allowed user when a project changed between
+up and down while no toggle was in flight.
 
 ## Dashboard internals
 
