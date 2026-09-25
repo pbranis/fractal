@@ -161,8 +161,9 @@ machine, not just the agent windows `work` created. `lib/fractal_sessions.py`
 `~/.claude/sessions/<pid>.json` current by itself (status, when it changed,
 cwd, tmux pane, session id). A file only counts when its pid is alive and
 `/proc/<pid>/stat` has the recorded start time, so a reused pid never
-resurrects an old session. `busy` means working; `idle` and `shell` (turn
-finished, a background shell still running) mean it waits for you. Title, last
+resurrects an old session. `busy` means working, `waiting` means it asked
+something (a question, a permission) and is blocked on you; `idle` and
+`shell` (turn finished, a background shell still running) mean it is done. Title, last
 prompt and last answer come from the transcript
 `~/.claude/projects/*/<session id>.jsonl`, parsed incrementally from a
 remembered byte offset (first read: at most the last 4 MB). The project is the
@@ -175,6 +176,10 @@ persistence, fed the recent prompts and answers on stdin. Results are cached in
 `$FRACTAL_STATE_DIR/session-summaries.json` and pruned when a session ends.
 The terminal button opens `/term/?arg=pane:<n>`, which joins a grouped tmux
 session so other clients keep their current window.
+
+The card groups sessions by the registry `group`, then by project; each
+project has a hue (`color` in the registry, or a palette by registry order)
+shared by its session tag and the stripe on its project card.
 
 It is served by `/ctl` rather than as a static JSON in the web root because
 prompts are personal content and `/ctl` is tailnet-only.

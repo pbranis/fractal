@@ -28,6 +28,7 @@ request by every component, so edits apply immediately. Prefer
 | `links` | array of Link | rows on the card |
 | `service` | Service | enables the on/off switch |
 | `pinned` | bool | render as a highlighted section next to the Machine card |
+| `color` | number 0–360 | hue of the project's colour (card stripe, session tags); default: a palette by registry order |
 | `sendLabel` | string | label of the pinned card's send button (default "✍ Poslat agentovi") |
 | `sendPrefix` | string | prepended to text sent to the agent window, e.g. `"/braindump "` |
 | `hooks` | object name → command | commands the dashboard may run via `/ctl/run/<name>/<hook>` |

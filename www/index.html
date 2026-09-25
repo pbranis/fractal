@@ -18,6 +18,9 @@
     --codex:#10a37f;
     /* pripnute projekty maji vlastni odstin, aby sekce nesplyvala se zbytkem */
     --pin:#7c46c8; --pin-soft:#f4eefc; --pin-line:#d9c8f2; --pin-on:#ffffff;
+    /* barva projektu: odstin --h dava projekt (projHue), sytost a svetlost
+       tady podle tematu - stitek, jeho text a pruh na karte */
+    --ptag-bg:78% 88%; --ptag-fg:70% 27%; --pline:65% 48%;
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
@@ -25,6 +28,7 @@
       --text:#ffffff; --text2:#c3c2b7; --muted:#898781;
       --accent:#3987e5; --chip:#232321; --codex:#2bb894;
       --pin:#b18cf0; --pin-soft:#1d1830; --pin-line:#3a2f57; --pin-on:#140f22;
+      --ptag-bg:45% 24%; --ptag-fg:85% 82%; --pline:60% 58%;
     }
   }
   :root[data-theme="dark"]{
@@ -32,6 +36,7 @@
     --text:#ffffff; --text2:#c3c2b7; --muted:#898781;
     --accent:#3987e5; --chip:#232321; --codex:#2bb894;
     --pin:#b18cf0; --pin-soft:#1d1830; --pin-line:#3a2f57; --pin-on:#140f22;
+    --ptag-bg:45% 24%; --ptag-fg:85% 82%; --pline:60% 58%;
   }
   *{box-sizing:border-box}
   body{
@@ -330,7 +335,27 @@
   .scard .sdot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:0 0 auto}
   .scard.work .sdot{background:var(--claude);animation:swpulse 1.2s ease-in-out infinite}
   .scard.work .st{color:var(--text);font-weight:500}
-  .scard .proj{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  /* chce odpoved (otazka / povoleni): tecka ve tvaru ctverecku + tucne slovo */
+  .scard.ask .sdot{background:var(--warn);border-radius:2px}
+  .scard.ask .st{color:var(--text);font-weight:600}
+  /* skupiny a projekty: skupina = drobny nadpis, projekt = barevny stitek,
+     pod nim jeho sezeni; karty sezeni nesou pruh v barve projektu */
+  /* skupiny i projekty v nich teku vedle sebe; sirka roste s poctem sezeni
+     (--n), takze skupina s jednim sezenim nezabere cely radek */
+  #sess-live,#sess-old-list{display:flex;flex-wrap:wrap;gap:20px 28px;align-items:flex-start}
+  #sess-live:not(:empty){margin-top:14px}
+  .sgroup{flex:1 1 calc(var(--n) * 350px);min-width:min(100%,320px);max-width:100%}
+  .sgbody{display:flex;flex-wrap:wrap;gap:12px 18px;align-items:flex-start}
+  .sproj{flex:1 1 calc(var(--n) * 350px);min-width:min(100%,320px);max-width:100%}
+  .sgh{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--muted);
+       text-transform:uppercase;letter-spacing:.05em}
+  .sph{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .sph .note{font-size:12px}
+  .sproj > .sgrid{margin-top:8px}
+  .scard{border-left:4px solid hsl(var(--h,0) var(--pline))}
+  .scard.nohue{border-left-color:var(--border)}
+  .scard.work{border-left-color:hsl(var(--h,0) var(--pline))}
+  .scard.work.nohue{border-left-color:var(--claude)}
   .scard .sterm{margin-left:auto;flex:0 0 auto;color:var(--accent);text-decoration:none;
                 font-weight:500;padding:3px 9px;border:1px solid var(--accent);border-radius:6px}
   .scard .sterm:hover{background:var(--accent);color:var(--card)}
@@ -364,9 +389,20 @@
   .sold summary::before{content:"▸";color:var(--muted);font-size:11px;transition:transform .15s}
   .sold[open] summary::before{transform:rotate(90deg)}
   .sold summary:hover{color:var(--text)}
-  .sold .scard{opacity:.62}
-  .sold .scard:hover,.sold .scard:focus-within{opacity:1}
+  .sold #sess-old-list{margin-top:12px}
+  .sold .sgroup{opacity:.62}
+  .sold .sgroup:hover,.sold .sgroup:focus-within{opacity:1}
   @media (prefers-reduced-motion:reduce){ .scard.work .sdot{animation:none} }
+
+  .ptag{display:inline-flex;align-items:center;gap:6px;max-width:100%;
+        padding:3px 11px;border-radius:999px;font-size:13px;font-weight:650;
+        line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+        background:hsl(var(--h,0) var(--ptag-bg));color:hsl(var(--h,0) var(--ptag-fg))}
+  .ptag.nohue{background:var(--chip);color:var(--text2)}
+  /* karta projektu: pruh vlevo ve stejne barve jako stitek jeho sezeni */
+  .card.pcol{border-left:5px solid hsl(var(--h) var(--pline))}
+  .card.pcol .cardhead h2::before{content:"";display:inline-block;width:10px;height:10px;
+        border-radius:3px;margin-right:9px;vertical-align:1px;background:hsl(var(--h) var(--pline))}
 
   /* ---- prohlizec souboru (zalozka Soubory) ---- */
   .files{margin-top:18px}
@@ -466,11 +502,11 @@
   <section class="card sessions" id="sessions" hidden>
     <div class="sess-head"><h2>Sezení Claude</h2><span class="cnt" id="sess-cnt"></span></div>
     <div class="swerr" id="sess-err"></div>
-    <div class="sgrid" id="sess-live"></div>
+    <div id="sess-live"></div>
     <div class="sess-empty" id="sess-empty" hidden>Nic se teď nedělá.</div>
     <details class="sold" id="sess-old" hidden>
       <summary id="sess-old-sum"></summary>
-      <div class="sgrid" id="sess-old-list"></div>
+      <div id="sess-old-list"></div>
     </details>
   </section>
 
@@ -641,6 +677,8 @@ async function toggle(name) {
 function projectCard(p) {
   const card = document.createElement("section");
   card.className = "card";
+  const pi = PROJ.get(p.name);
+  if (pi) { card.classList.add("pcol"); card.style.setProperty("--h", pi.hue); }
 
   const h = document.createElement("h2");
   h.textContent = p.title || p.name;
@@ -1198,6 +1236,9 @@ async function renderProjects() {
   // Pripnute projekty maji vlastni sekci vedle Stroje, do mrizky karet
   // nepatri. V registru jsou stejne jako ostatni - cte je 'work' i '/term/'.
   const all = reg.projects || [];
+  all.forEach((p, i) => PROJ.set(p.name, {group: p.group || FALLBACK_GROUP, title: p.title || p.name,
+                                          hue: projHue(p, i)}));
+  scheduleSess(0);                         // sezeni uz muzou dostat barvy a skupiny
   for (const p of all.filter(p => p.pinned)) renderPinned(p);
   if (reg.footer) document.getElementById("footer").innerHTML = reg.footer;
 
@@ -1363,9 +1404,71 @@ const SESS_STATE = {
   // "shell": tah skoncil, jen na pozadi jeste bezi shell (Bash s run_in_background)
   shell: {work: false, t: "čeká · shell na pozadí"},
   idle:  {work: false, t: "čeká"},
+  // "waiting": sezeni se na neco pta (otazka, povoleni) - blokuje ho uzivatel
+  waiting: {work: false, ask: true, t: "chce odpověď"},
 };
 const sessOpen = new Set();                // rozbalene karty (prezije prekresleni)
 let sessTimer = null;
+
+/* Barva projektu: odstin z pole "color" v registru (0-360), jinak z palety
+   podle poradi v registru. Poradi je stabilni (novy projekt se pridava na
+   konec) a sousedni projekty dostanou od sebe vzdalene odstiny. */
+const PROJ = new Map();                    // jmeno -> {group, title, hue}
+const HUES = [212, 28, 150, 330, 262, 48, 185, 0, 95, 290, 232, 125];
+const OTHER_GROUP = "Mimo projekty";
+function projHue(p, i) {
+  const c = Number(p.color);
+  return p.color !== undefined && Number.isFinite(c) ? c : HUES[i % HUES.length];
+}
+function paintHue(node, name) {
+  const pi = name && PROJ.get(name);
+  if (pi) node.style.setProperty("--h", pi.hue); else node.classList.add("nohue");
+}
+
+// Sezeni -> skupina (z registru) -> projekt -> karty. Nahoru jde skupina
+// a projekt, kde se prave pracuje, pak podle posledni zmeny.
+function sessGrouped(list, now) {
+  const isWork = x => { const st = SESS_STATE[x.status] || {}; return st.work ? 2 : st.ask ? 1 : 0; };
+  const rank = xs => Math.max(...xs.map(x => isWork(x) * 1e12 + x.since));
+  const groups = new Map();
+  for (const x of list) {
+    const pi = PROJ.get(x.project);
+    const g = pi ? pi.group : OTHER_GROUP;
+    const key = pi ? x.project : (x.tmux || x.cwd || "~");
+    if (!groups.has(g)) groups.set(g, new Map());
+    const pm = groups.get(g);
+    if (!pm.has(key)) pm.set(key, []);
+    pm.get(key).push(x);
+  }
+  const out = [];
+  const gs = [...groups].sort((a, b) => rank([...b[1].values()].flat()) - rank([...a[1].values()].flat()));
+  for (const [g, pm] of gs) {
+    const gbox = el("div", "sgroup");
+    gbox.style.setProperty("--n", [...pm.values()].flat().length);
+    const h = el("h3", "sgh"); h.textContent = g;
+    const body = el("div", "sgbody");
+    gbox.append(h, body);
+    for (const [key, xs] of [...pm].sort((a, b) => rank(b[1]) - rank(a[1]))) {
+      xs.sort((a, b) => isWork(b) - isWork(a) || b.since - a.since);
+      const pi = PROJ.get(key);
+      const box = el("div", "sproj");
+      box.style.setProperty("--n", xs.length);
+      const head = el("div", "sph");
+      const tag = el("span", "ptag");
+      paintHue(tag, pi ? key : null);
+      tag.textContent = pi ? pi.title : key;
+      tag.title = pi ? key : "";
+      head.appendChild(tag);
+      if (xs.length > 1) { const n = el("span", "note"); n.textContent = `${xs.length} sezení`; head.appendChild(n); }
+      const grid = el("div", "sgrid");
+      grid.append(...xs.map(x => sessCard(x, now)));
+      box.append(head, grid);
+      body.appendChild(box);
+    }
+    out.push(gbox);
+  }
+  return out;
+}
 
 // cesky tvar slovesa: 2-4 v mnoznem cisle, jinak (1, 0, 5+) jednotne
 const cz = (n, one, few) => n >= 2 && n <= 4 ? few : one;
@@ -1373,14 +1476,13 @@ function ago(s) { return s < 60 ? "<1 min" : dur(s); }
 
 function sessCard(x, now) {
   const st = SESS_STATE[x.status] || {work: false, t: x.status};
-  const c = el("div", "scard" + (st.work ? " work" : "") + (sessOpen.has(x.sessionId) ? " open" : ""));
+  const c = el("div", "scard" + (st.work ? " work" : "") + (st.ask ? " ask" : "") + (sessOpen.has(x.sessionId) ? " open" : ""));
+  paintHue(c, x.project);
 
   const top = el("div", "top");
   const s = el("span", "st");
   s.append(el("span", "sdot"), `${st.t} · ${ago(now - x.since)}`);
-  const proj = el("span", "proj");
-  proj.textContent = x.project || x.tmux || "~";
-  top.append(s, proj);
+  top.append(s);
   if (x.pane) {
     const a = el("a", "sterm");
     a.href = "/term/?arg=" + encodeURIComponent("pane:" + x.pane);
@@ -1454,23 +1556,26 @@ async function loadSessions() {
   document.getElementById("sess-err").textContent = "";
   const now = d.now || Date.now() / 1000;
   const all = d.sessions || [];
-  const isOld = x => !(SESS_STATE[x.status] || {}).work && now - x.since > STALE_H * 3600;
-  // nahore to, co pracuje, pak podle posledni zmeny
-  const live = all.filter(x => !isOld(x))
-    .sort((a, b) => ((SESS_STATE[b.status] || {}).work - (SESS_STATE[a.status] || {}).work) || b.since - a.since);
+  const isOld = x => { const st = SESS_STATE[x.status] || {};
+                       return !st.work && !st.ask && now - x.since > STALE_H * 3600; };
+  const live = all.filter(x => !isOld(x));
   const old = all.filter(isOld);
 
-  document.getElementById("sess-live").replaceChildren(...live.map(x => sessCard(x, now)));
+  document.getElementById("sess-live").replaceChildren(...sessGrouped(live, now));
   document.getElementById("sess-empty").hidden = live.length > 0;
   const oldBox = document.getElementById("sess-old");
   oldBox.hidden = old.length === 0;
   document.getElementById("sess-old-sum").textContent =
     `${old.length} ${old.length < 5 ? "starší sezení" : "starších sezení"} — nic se neděje přes ${STALE_H} h`;
-  document.getElementById("sess-old-list").replaceChildren(...old.map(x => sessCard(x, now)));
+  document.getElementById("sess-old-list").replaceChildren(...sessGrouped(old, now));
 
   const working = all.filter(x => (SESS_STATE[x.status] || {}).work).length;
+  const asking = all.filter(x => (SESS_STATE[x.status] || {}).ask).length;
+  const rest = all.length - working - asking;
   document.getElementById("sess-cnt").textContent =
-    `${working} ${cz(working, "pracuje", "pracují")} · ${all.length - working} ${cz(all.length - working, "čeká", "čekají")}`;
+    `${working} ${cz(working, "pracuje", "pracují")}` +
+    (asking ? ` · ${asking} ${cz(asking, "chce", "chtějí")} odpověď` : "") +
+    ` · ${rest} ${cz(rest, "čeká", "čekají")}`;
 
   // behem prace nebo shrnovani casteji, jinak staci jednou za 20 s
   scheduleSess(all.some(x => x.summarizing) ? 2000 : working ? 8000 : 20000);

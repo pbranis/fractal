@@ -3,7 +3,7 @@ and what it was last asked and answered.
 
 Nothing here needs hooks or a running daemon. Every interactive Claude Code
 process keeps ``~/.claude/sessions/<pid>.json`` up to date by itself (status
-busy/idle, or "shell" = idle with a background shell still running; when it changed, cwd, tmux pane, session id); the text comes
+busy, waiting = asks the user, idle, or "shell" = idle with a background shell still running; when it changed, cwd, tmux pane, session id); the text comes
 from the tail of its transcript ``~/.claude/projects/*/<session id>.jsonl``.
 
 Transcripts grow to megabytes, so they are parsed incrementally: every file
