@@ -92,11 +92,19 @@ def runs(project: str) -> dict[str, str]:
     return {n[5:]: p for n, p in windows(project).items() if n.startswith("task-")}
 
 
+def is_running(task: dict, panes: dict[str, str]) -> bool:
+    """A runner window alone is not a run: it stays open a while after the
+    outcome was written, so the status has to say running too."""
+    return task["id"] in panes and task["status"] in T.RUNNING
+
+
 def launch(proj: dict, task: dict, mode: str) -> tuple[bool, str]:
     name, root = proj["name"], proj["root"]
     win = f"task-{task['id']}"
     if win in windows(name):
-        return False, "already running"
+        if task["status"] in T.RUNNING:
+            return False, "already running"
+        tmux("kill-window", "-t", f"{name}:{win}")      # leftover of a finished run
     cmd = f"{shlex.quote(os.path.join(BIN, 'fractal-task-run'))} {shlex.quote(name)} {shlex.quote(task['id'])} {mode}"
     task["status"] = "triage" if mode == "triage" else "in-progress"
     task["phase"] = "triage" if mode == "triage" else "dev"
@@ -203,7 +211,7 @@ def watcher() -> None:
 def public(t: dict, run_panes: dict[str, str]) -> dict:
     out = {k: t.get(k) for k in ("id", "title", "status", "order", "priority", "assignee", "phase",
                                  "verify", "timeout_minutes", "created", "updated", "file", "request", "sections")}
-    out["run"] = {"pane": run_panes[t["id"]]} if t["id"] in run_panes else None
+    out["run"] = {"pane": run_panes[t["id"]]} if is_running(t, run_panes) else None
     return out
 
 
@@ -214,7 +222,7 @@ def project_summary(proj: dict) -> dict:
         counts[t["status"]] = counts.get(t["status"], 0) + 1
     return {"name": proj["name"], "title": proj.get("title") or proj["name"], "group": proj.get("group"),
             "color": proj.get("color"), "counts": counts, "settings": T.project_settings(proj["name"]),
-            "running": sorted(runs(proj["name"]))}
+            "running": sorted(t["id"] for t in tasks if is_running(t, runs(proj["name"])))}
 
 
 def latest_log(proj: dict, task_id: str) -> str:
@@ -386,7 +394,7 @@ class Handler(BaseHTTPRequestHandler):
         if not t:
             return
         action = parts[3] if len(parts) == 4 else ""
-        running = t["id"] in runs(name)
+        running = is_running(t, runs(name))
 
         if method == "PATCH" and not action:
             if "title" in body:
