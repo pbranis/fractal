@@ -515,6 +515,7 @@
     </details>
     <div class="actions">
       <a class="term" href="/term/?arg=home" target="term-home" rel="noopener">▸ Terminál v <code>~</code> <span class="hint">tmux session „home"</span></a>
+      <a class="term" href="/tasks.html" target="_blank" rel="noopener">☑ Úkoly <span class="hint" id="tasks-hint">kanban pro agenty · jen tailnet</span></a>
       <a class="term" href="/docs.html" target="_blank" rel="noopener">☰ Zkratky a ovládání <span class="hint">claude, codex, tmux</span></a>
       <button class="drop" id="drop" type="button">
         ⇪ Přetáhni sem soubory <span class="hint" id="drop-hint">nebo klikni · <code>~/uploads</code></span>
@@ -1884,6 +1885,30 @@ async function loadCodex() {
 
 loadCodex();
 setInterval(loadCodex, 60000);
+
+/* Ukoly (fractal-tasks, /tasks/): do napovedy tlacitka napise, kolik ukolu
+   ceka na cloveka (plan ke schvaleni, otazky agenta) a kolik jich bezi.
+   Z LAN vraci API 403 - pak zustane vychozi text. */
+async function loadTasksHint(){
+  const el = document.getElementById("tasks-hint");
+  if (!el) return;
+  try {
+    const r = await fetch("/tasks/projects", {cache: "no-store"});
+    if (!r.ok) return;
+    const d = await r.json();
+    let waiting = 0, running = 0;
+    for (const p of d.projects || []) {
+      waiting += (p.counts?.review || 0) + (p.counts?.["need-attention"] || 0);
+      running += (p.running || []).length;
+    }
+    const parts = [];
+    if (waiting) parts.push(`\u010dek\u00e1 na tebe ${waiting}`);
+    if (running) parts.push(`b\u011b\u017e\u00ed ${running}`);
+    el.textContent = parts.length ? parts.join(" \u00b7 ") : "nic ne\u010dek\u00e1";
+  } catch (e) {}
+}
+loadTasksHint();
+setInterval(loadTasksHint, 30000);
 </script>
 </body>
 </html>

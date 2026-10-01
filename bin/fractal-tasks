@@ -1,0 +1,528 @@
+#!/usr/bin/env python3
+"""Task board backend: the kanban at /tasks.html talks to this.
+
+Runs as the normal user on the loopback interface; nginx exposes it under
+/tasks/ and restricts it to the tailnet (task texts are personal, and this
+starts agent sessions). There is no database: a project's tasks are the
+markdown files in <root>/tasks/ (see lib/fractal_tasks.py for the format),
+so git, an editor and the agent see exactly what the board sees.
+
+What it adds on top of the files:
+  - the REST surface below, with the state machine (approve, answer, reject);
+  - starting the runner (fractal-task-run) in a tmux window "task-<id>" of
+    the project's session - the same session `work` attaches to, so a run is
+    watchable in the browser terminal and survives this service;
+  - a watcher: file changes become server-sent events, a run whose window
+    vanished without writing an outcome is parked in need-attention, and
+    with "auto" on the first queued task starts when nothing is running;
+  - auto triage: a new task gets a triage session right away (default on).
+
+Endpoints (nginx strips the /tasks/ prefix):
+    GET   /projects                       projects with a tasks/ dir, counts, settings
+    GET   /events                         server-sent events: {"project": name} on change
+    GET   /<p>/tasks[?archive=1]          all tasks of a project (or the archive)
+    POST  /<p>/tasks {title, request?, status?, priority?}
+    GET   /<p>/tasks/<id>                 one task
+    PATCH /<p>/tasks/<id> {title?, request?, priority?, assignee?, verify?, status?}
+    POST  /<p>/tasks/<id>/move {status, ids}   drag and drop: target column + its order
+    POST  /<p>/tasks/<id>/answer {text}   append Answers; back to triage or todo
+    POST  /<p>/tasks/<id>/approve         review: plan -> todo, work -> done
+    POST  /<p>/tasks/<id>/reject {text}   review of work: append Feedback -> todo
+    POST  /<p>/tasks/<id>/run             start the implementation now
+    POST  /<p>/tasks/<id>/triage          start (another) triage now
+    POST  /<p>/tasks/<id>/stop            kill the runner window
+    POST  /<p>/tasks/<id>/archive         move a done/canceled task to tasks/archive/
+    GET   /<p>/tasks/<id>/log             tail of the latest run log
+    POST  /<p>/settings {auto?, auto_triage?}
+"""
+from __future__ import annotations
+
+import json
+import os
+import queue
+import re
+import shlex
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+import fractal_tasks as T  # noqa: E402
+from fractal_config import HOME, port  # noqa: E402
+
+PORT = port("TASKS")
+BIN = os.path.join(HOME, ".local", "bin")
+POLL = 2.0                 # seconds between file / tmux checks
+ORPHAN_AFTER = 120         # a "running" task without a window for this long is parked
+MAX_BODY = 200_000
+ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,40}$")
+LOG_TAIL = 400
+
+_subs: list[queue.Queue] = []
+_lock = threading.Lock()
+_launched: dict[tuple[str, str], float] = {}    # (project, id) -> time of launch, grace for the watcher
+
+
+def log(*a) -> None:
+    print(*a, flush=True)
+
+
+# --- tmux ---------------------------------------------------------------------------
+
+def tmux(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["tmux", *args], capture_output=True, text=True)
+
+
+def windows(project: str) -> dict[str, str]:
+    """window name -> first pane id, for the project's tmux session."""
+    r = tmux("list-windows", "-t", project + ":", "-F", "#{window_name} #{pane_id}")
+    out = {}
+    if r.returncode == 0:
+        for line in r.stdout.splitlines():
+            name, _, pane = line.partition(" ")
+            out[name] = pane
+    return out
+
+
+def runs(project: str) -> dict[str, str]:
+    """task id -> pane id of its runner window."""
+    return {n[5:]: p for n, p in windows(project).items() if n.startswith("task-")}
+
+
+def launch(proj: dict, task: dict, mode: str) -> tuple[bool, str]:
+    name, root = proj["name"], proj["root"]
+    win = f"task-{task['id']}"
+    if win in windows(name):
+        return False, "already running"
+    cmd = f"{shlex.quote(os.path.join(BIN, 'fractal-task-run'))} {shlex.quote(name)} {shlex.quote(task['id'])} {mode}"
+    task["status"] = "triage" if mode == "triage" else "in-progress"
+    task["phase"] = "triage" if mode == "triage" else "dev"
+    T.write(task)
+    if tmux("has-session", "-t", name + ":").returncode == 0:
+        r = tmux("new-window", "-d", "-P", "-F", "#{pane_id}", "-t", name + ":", "-n", win, "-c", root, cmd)
+    else:
+        r = tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", name, "-n", win, "-c", root, cmd)
+    if r.returncode != 0:
+        task["status"] = "need-attention"
+        T.append(task, "Error", f"could not start the runner: {r.stderr.strip() or 'tmux failed'}", who="board")
+        T.write(task)
+        return False, r.stderr.strip() or "tmux failed"
+    _launched[(name, task["id"])] = time.monotonic()
+    log(f"{name}: task {task['id']} {mode} started in {win} ({r.stdout.strip()})")
+    return True, r.stdout.strip()
+
+
+def stop(proj: dict, task: dict) -> bool:
+    name = proj["name"]
+    win = f"task-{task['id']}"
+    if win not in windows(name):
+        return False
+    tmux("kill-window", "-t", f"{name}:{win}")
+    task = T.load(task["path"])
+    if task["status"] in T.RUNNING:
+        task["status"] = "need-attention"
+        T.append(task, "Error", "run stopped from the board", who="board")
+        T.write(task)
+    return True
+
+
+# --- events -----------------------------------------------------------------------
+
+def broadcast(payload: dict) -> None:
+    with _lock:
+        subs = list(_subs)
+    for q in subs:
+        try:
+            q.put_nowait(payload)
+        except queue.Full:
+            pass
+
+
+def signature(proj: dict) -> tuple:
+    d = T.tasks_dir(proj)
+    try:
+        return tuple(sorted((n, os.stat(os.path.join(d, n)).st_mtime_ns)
+                            for n in os.listdir(d) if n.endswith(".md")))
+    except OSError:
+        return ()
+
+
+def watcher() -> None:
+    sigs: dict[str, tuple] = {}
+    seen_runs: dict[str, dict] = {}
+    while True:
+        try:
+            for proj in T.projects_with_tasks():
+                name = proj["name"]
+                changed = False
+                s = signature(proj)
+                if sigs.get(name) != s:
+                    sigs[name] = s
+                    changed = True
+                r = runs(name)
+                if seen_runs.get(name) != r:
+                    seen_runs[name] = r
+                    changed = True
+                tasks = T.list_tasks(proj)
+                # a run whose window is gone but whose outcome never got written
+                for t in tasks:
+                    if t["status"] in T.RUNNING and t["id"] not in r:
+                        since = _launched.get((name, t["id"]))
+                        age = time.monotonic() - since if since else ORPHAN_AFTER + 1
+                        try:
+                            file_age = time.time() - os.stat(t["path"]).st_mtime
+                        except OSError:
+                            file_age = ORPHAN_AFTER + 1
+                        if age > ORPHAN_AFTER and file_age > ORPHAN_AFTER:
+                            t["status"] = "need-attention"
+                            T.append(t, "Error", "the runner window disappeared without an outcome "
+                                     "(machine restart? killed?) - check tasks/logs and start it again", who="board")
+                            T.write(t)
+                            log(f"{name}: task {t['id']} orphaned -> need-attention")
+                            changed = True
+                # auto queue: one implementation at a time per project
+                st = T.project_settings(name)
+                if st["auto"] and not any(t["status"] == "in-progress" for t in tasks):
+                    for t in sorted((t for t in tasks if t["status"] == "todo" and t.get("assignee", "claude") == "claude"),
+                                    key=lambda t: (t.get("order", 0), t["id"])):
+                        ok, _ = launch(proj, t, "run")
+                        changed = True
+                        break
+                if changed:
+                    broadcast({"project": name, "runs": runs(name)})
+        except Exception as e:                       # noqa: BLE001 - the watcher must survive anything
+            log(f"watcher: {type(e).__name__}: {e}")
+        time.sleep(POLL)
+
+
+# --- presentation -----------------------------------------------------------------
+
+def public(t: dict, run_panes: dict[str, str]) -> dict:
+    out = {k: t.get(k) for k in ("id", "title", "status", "order", "priority", "assignee", "phase",
+                                 "verify", "timeout_minutes", "created", "updated", "file", "request", "sections")}
+    out["run"] = {"pane": run_panes[t["id"]]} if t["id"] in run_panes else None
+    return out
+
+
+def project_summary(proj: dict) -> dict:
+    tasks = T.list_tasks(proj)
+    counts: dict[str, int] = {}
+    for t in tasks:
+        counts[t["status"]] = counts.get(t["status"], 0) + 1
+    return {"name": proj["name"], "title": proj.get("title") or proj["name"], "group": proj.get("group"),
+            "color": proj.get("color"), "counts": counts, "settings": T.project_settings(proj["name"]),
+            "running": sorted(runs(proj["name"]))}
+
+
+def latest_log(proj: dict, task_id: str) -> str:
+    d = os.path.join(T.tasks_dir(proj), T.LOGS_DIRNAME)
+    try:
+        names = sorted(n for n in os.listdir(d) if n.startswith(task_id + "-") and n.endswith(".log"))
+    except OSError:
+        return ""
+    if not names:
+        return ""
+    with open(os.path.join(d, names[-1]), encoding="utf-8", errors="replace") as f:
+        lines = f.read().splitlines()
+    return f"{names[-1]}\n" + "\n".join(lines[-LOG_TAIL:])
+
+
+# --- HTTP ---------------------------------------------------------------------------
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "fractal-tasks"
+
+    def log_message(self, fmt, *args):
+        if self.command != "GET":
+            super().log_message(fmt, *args)
+
+    def _json(self, code: int, payload) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _body(self) -> dict:
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0:
+            return {}
+        if n > MAX_BODY:
+            raise ValueError("body too large")
+        data = json.loads(self.rfile.read(n).decode("utf-8"))
+        return data if isinstance(data, dict) else {}
+
+    def _route(self) -> tuple[list[str], dict]:
+        u = urlparse(self.path)
+        return [p for p in u.path.split("/") if p], parse_qs(u.query)
+
+    def _project(self, name: str) -> dict | None:
+        p = T.project(name)
+        if p is None:
+            self._json(404, {"error": f"'{name}' has no tasks/ directory or is not registered"})
+        return p
+
+    def _task(self, proj: dict, tid: str) -> dict | None:
+        if not ID_RE.match(tid):
+            self._json(400, {"error": "bad task id"})
+            return None
+        t = T.find(proj, tid)
+        if t is None:
+            self._json(404, {"error": f"no task {tid}"})
+        return t
+
+    # -- GET --
+    def do_GET(self) -> None:
+        parts, q = self._route()
+        if parts == ["projects"]:
+            return self._json(200, {"projects": [project_summary(p) for p in T.projects_with_tasks()]})
+        if parts == ["events"]:
+            return self._events()
+        if len(parts) >= 2 and parts[1] == "tasks":
+            proj = self._project(parts[0])
+            if not proj:
+                return
+            if len(parts) == 2:
+                archive = (q.get("archive") or ["0"])[0] == "1"
+                panes = {} if archive else runs(proj["name"])
+                return self._json(200, {"project": project_summary(proj),
+                                        "tasks": [public(t, panes) for t in T.list_tasks(proj, archive=archive)]})
+            t = self._task(proj, parts[2])
+            if not t:
+                return
+            if len(parts) == 3:
+                return self._json(200, public(t, runs(proj["name"])))
+            if len(parts) == 4 and parts[3] == "log":
+                return self._json(200, {"log": latest_log(proj, t["id"])})
+        self._json(404, {"error": "unknown endpoint"})
+
+    def _events(self) -> None:
+        q: queue.Queue = queue.Queue(maxsize=100)
+        with _lock:
+            _subs.append(q)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            self.wfile.write(b"retry: 3000\n\n")
+            self.wfile.flush()
+            while True:
+                try:
+                    payload = q.get(timeout=15)
+                    self.wfile.write(f"event: change\ndata: {json.dumps(payload)}\n\n".encode())
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            with _lock:
+                if q in _subs:
+                    _subs.remove(q)
+
+    # -- writes --
+    def do_POST(self) -> None:
+        self._write("POST")
+
+    def do_PATCH(self) -> None:
+        self._write("PATCH")
+
+    def _write(self, method: str) -> None:
+        parts, _q = self._route()
+        try:
+            body = self._body()
+        except (ValueError, UnicodeDecodeError) as e:
+            return self._json(400, {"error": f"bad JSON: {e}"})
+        if len(parts) < 2:
+            return self._json(404, {"error": "unknown endpoint"})
+        proj = self._project(parts[0])
+        if not proj:
+            return
+        name = proj["name"]
+
+        if parts[1] == "settings" and method == "POST":
+            st = T.project_settings(name)
+            for k in ("auto", "auto_triage"):
+                if k in body:
+                    st = T.set_project_setting(name, k, bool(body[k]))
+            broadcast({"project": name})
+            return self._json(200, st)
+
+        if parts[1] != "tasks":
+            return self._json(404, {"error": "unknown endpoint"})
+
+        # create
+        if len(parts) == 2 and method == "POST":
+            title = " ".join(str(body.get("title") or "").split())
+            request = str(body.get("request") or "").strip()
+            if not title and request:
+                title = request.splitlines()[0][:120]
+            if not title:
+                return self._json(400, {"error": "title is required"})
+            st = T.project_settings(name)
+            status = body.get("status") if body.get("status") in T.STATUSES else ("triage" if st["auto_triage"] else "backlog")
+            if status in T.RUNNING and status != "triage":
+                status = "backlog"
+            extra = {}
+            if body.get("priority") in T.PRIORITIES:
+                extra["priority"] = body["priority"]
+            t = T.create(proj, title, request or title, status=status, **extra)
+            if status == "triage":
+                ok, msg = launch(proj, t, "triage")
+                if not ok:
+                    log(f"{name}: triage of {t['id']} not started: {msg}")
+            T.commit_task_file(proj["root"], t["path"], f"task {t['id']}: new")
+            broadcast({"project": name})
+            return self._json(201, public(T.load(t["path"]), runs(name)))
+
+        t = self._task(proj, parts[2])
+        if not t:
+            return
+        action = parts[3] if len(parts) == 4 else ""
+        running = t["id"] in runs(name)
+
+        if method == "PATCH" and not action:
+            if "title" in body:
+                t["title"] = " ".join(str(body["title"]).split())[:200] or t["title"]
+            if "priority" in body and body["priority"] in T.PRIORITIES:
+                t["priority"] = body["priority"]
+            if "assignee" in body:
+                t["assignee"] = re.sub(r"[^A-Za-z0-9_.-]", "", str(body["assignee"]))[:40]
+            if "verify" in body:
+                t["verify"] = str(body["verify"]).strip()[:500]
+            if "timeout_minutes" in body:
+                try:
+                    t["timeout_minutes"] = max(1, min(600, int(body["timeout_minutes"])))
+                except (TypeError, ValueError):
+                    pass
+            if "status" in body and body["status"] in T.STATUSES and body["status"] not in T.RUNNING:
+                if running:
+                    return self._json(409, {"error": "stop the run first"})
+                if body["status"] != t["status"]:
+                    t["status"] = body["status"]
+                    t["order"] = T.next_order(proj, t["status"])
+            T.write(t)
+            if "request" in body:
+                T.set_request(t, str(body["request"])[:MAX_BODY])
+            T.commit_task_file(proj["root"], t["path"], f"task {t['id']}: edited")
+            broadcast({"project": name})
+            return self._json(200, public(T.load(t["path"]), runs(name)))
+
+        if method != "POST":
+            return self._json(405, {"error": "method not allowed"})
+
+        if action == "move":
+            status = body.get("status")
+            if status not in T.STATUSES or status in T.RUNNING and status != "triage":
+                return self._json(400, {"error": "cannot drop a task there"})
+            if running:
+                return self._json(409, {"error": "stop the run first"})
+            if status == "triage":
+                ok, msg = launch(proj, t, "triage")
+                if not ok:
+                    return self._json(409, {"error": msg})
+            else:
+                if t["status"] != status:
+                    t["status"] = status
+                    if status == "todo":
+                        t["phase"] = "dev"      # queued = the next run implements (with or without a plan)
+                    T.write(t)
+                ids = [str(i) for i in (body.get("ids") or []) if ID_RE.match(str(i))]
+                if ids:
+                    T.reorder(proj, status, ids)
+            T.commit_task_file(proj["root"], t["path"], f"task {t['id']}: -> {status}")
+            broadcast({"project": name})
+            return self._json(200, public(T.load(t["path"]), runs(name)))
+
+        if action == "answer":
+            text = str(body.get("text") or "").strip()
+            if not text:
+                return self._json(400, {"error": "empty answer"})
+            if running:
+                return self._json(409, {"error": "the agent is still running"})
+            T.append(t, "Answers", text, who="owner")
+            if t.get("phase") == "triage":
+                ok, msg = launch(proj, t, "triage")         # re-plan with the answers in hand
+                if not ok:
+                    return self._json(409, {"error": msg})
+            else:
+                t["status"] = "todo"
+                t["order"] = T.ORDER_STEP // 2              # answered tasks jump to the front of the queue
+                T.write(t)
+            T.commit_task_file(proj["root"], t["path"], f"task {t['id']}: answered")
+            broadcast({"project": name})
+            return self._json(200, public(T.load(t["path"]), runs(name)))
+
+        if action == "approve":
+            if t["status"] not in ("review", "need-attention"):
+                return self._json(409, {"error": "nothing to approve"})
+            if t.get("phase") == "triage":
+                t["status"], t["phase"] = "todo", "dev"
+                t["order"] = T.next_order(proj, "todo")
+            else:
+                t["status"] = "done"
+                t["order"] = T.next_order(proj, "done")
+            T.write(t)
+            T.commit_task_file(proj["root"], t["path"], f"task {t['id']}: -> {t['status']}")
+            broadcast({"project": name})
+            return self._json(200, public(T.load(t["path"]), runs(name)))
+
+        if action == "reject":
+            text = str(body.get("text") or "").strip()
+            if not text:
+                return self._json(400, {"error": "say what should change"})
+            if t["status"] != "review" or t.get("phase") == "triage":
+                return self._json(409, {"error": "only finished work can be sent back; answer a plan instead"})
+            if running:
+                return self._json(409, {"error": "the agent is still running"})
+            T.append(t, "Feedback", text, who="owner")
+            t["status"], t["phase"] = "todo", "dev"
+            t["order"] = T.ORDER_STEP // 2
+            T.write(t)
+            T.commit_task_file(proj["root"], t["path"], f"task {t['id']}: feedback")
+            broadcast({"project": name})
+            return self._json(200, public(T.load(t["path"]), runs(name)))
+
+        if action in ("run", "triage"):
+            if running:
+                return self._json(409, {"error": "already running"})
+            if action == "run" and any(x["status"] == "in-progress" for x in T.list_tasks(proj)):
+                return self._json(409, {"error": "another task is being implemented; one at a time per project"})
+            ok, msg = launch(proj, t, action)
+            if not ok:
+                return self._json(409, {"error": msg})
+            broadcast({"project": name})
+            return self._json(202, public(T.load(t["path"]), runs(name)))
+
+        if action == "stop":
+            if not stop(proj, t):
+                return self._json(409, {"error": "not running"})
+            broadcast({"project": name})
+            return self._json(200, public(T.load(t["path"]), runs(name)))
+
+        if action == "archive":
+            if t["status"] not in ("done", "canceled"):
+                return self._json(409, {"error": "only done or canceled tasks are archived"})
+            target = T.archive(t)
+            root = proj["root"]
+            if T.tracked(root, target):
+                T.git(root, "add", "-A", "--", os.path.relpath(T.tasks_dir(proj), root))
+                T.git(root, "commit", "-q", "-m", f"task {t['id']}: archived", "--",
+                      os.path.relpath(T.tasks_dir(proj), root))
+            broadcast({"project": name})
+            return self._json(200, {"archived": os.path.basename(target)})
+
+        self._json(404, {"error": "unknown action"})
+
+
+if __name__ == "__main__":
+    threading.Thread(target=watcher, daemon=True, name="watcher").start()
+    log(f"fractal-tasks on 127.0.0.1:{PORT}")
+    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

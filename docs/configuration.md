@@ -17,6 +17,7 @@ has a default; an absent file is not an error.
 | `FRACTAL_FILES_PORT` | `7692` | `fractal-files`, nginx, unit |
 | `FRACTAL_UPLOAD_PORT` | `7690` | `fractal-upload`, nginx, unit |
 | `FRACTAL_TERM_PORT` | `7685` | ttyd unit, nginx |
+| `FRACTAL_TASKS_PORT` | `7693` | `fractal-tasks` (task board backend), nginx, unit |
 | `FRACTAL_AGENT` | `claude` | `work`, `fractal-ctl` (agent window, headless ask) |
 | `FRACTAL_AGENT_FLAGS` | `--dangerously-skip-permissions` | appended to the agent command |
 | `FRACTAL_AGENT_WINDOW` | `claude` | tmux window name the agent lives in |
@@ -35,10 +36,11 @@ touched).
 | What | Where |
 |---|---|
 | scripts | `~/.local/bin/*` → symlinks into `<repo>/bin/` |
-| dashboard | `$FRACTAL_WWW/index.html`, `docs.html`, `termkeys.js` (copies; `./install.sh --www-only` refreshes them) |
+| dashboard | `$FRACTAL_WWW/index.html`, `tasks.html`, `docs.html`, `termkeys.js` (copies; `./install.sh --www-only` refreshes them) |
 | registry | `$FRACTAL_WWW/projects.json` |
 | generated data | `$FRACTAL_WWW/status.json`, `claude-usage.json`, `codex-usage.json` |
 | autostart memory | `$FRACTAL_STATE_DIR/autostart.json` |
+| task board settings | `$FRACTAL_STATE_DIR/tasks-state.json` (auto queue / auto triage per project); the tasks themselves are `<root>/tasks/*.md` in each project |
 | telegram | `$FRACTAL_TELEGRAM_TOKEN_FILE` (0600), `$FRACTAL_STATE_DIR/telegram-defaults.json`, optional `telegram-help.txt` |
 | user units | `~/.config/systemd/user/fractal-*.service|timer`, `<project>.service` |
 | nginx | `/etc/nginx/sites-available/fractal`, `/etc/nginx/snippets/fractal-*.conf` |

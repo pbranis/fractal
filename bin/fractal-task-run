@@ -1,0 +1,391 @@
+#!/usr/bin/env python3
+"""Run ONE task of a project's board with the coding agent, headless.
+
+    fractal-task-run <project> <task id> triage      read the code, append a Plan (+ Questions)
+    fractal-task-run <project> <task id> run         implement, commit, append a Result
+    fractal-task-run ... --keep 0                    exit at once instead of leaving the
+                                                     window open for a while afterwards
+
+fractal-tasks (the board) starts this in a tmux window "task-<id>" of the
+project's session, so the run can be watched in the browser terminal; it
+works just as well by hand from a shell. One run = one headless Claude Code
+session (`claude -p`, stream-json) started in the project root, so the
+project's own CLAUDE.md applies. The agent gets the path of the task file and
+reads it itself; everything it has to say goes into that file as appended
+sections, the runner maintains the frontmatter:
+
+    triage:  status triage      -> review (phase triage)   plan written
+                                -> need-attention          no plan / crashed
+    run:     status in-progress -> review (phase dev)      result + verify ok
+                                -> need-attention          questions, verify failed, crashed
+
+The runner commits the task file alone (``git commit -- <file>``), never the
+agent's code: committing the work is the agent's job and part of the task.
+A plain-text log of the session lands in tasks/logs/.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+import fractal_tasks as T  # noqa: E402
+from fractal_config import CFG, HOME, URL  # noqa: E402
+
+NEED_ATTENTION = "NEED_ATTENTION"
+DEFAULT_TIMEOUT = {"triage": 25, "run": 120}        # minutes
+MAX_TURNS = {"triage": 80, "run": 250}
+KEEP_WINDOW = 180                                   # seconds the tmux window stays after the run
+USAGE_LIMIT_RE = re.compile(r"usage limit|rate limit.*reached|limit will reset", re.I)
+BOLD, DIM, RESET = "\033[1m", "\033[2m", "\033[0m"
+CYAN, GREEN, YELLOW, RED = "\033[36m", "\033[32m", "\033[33m", "\033[31m"
+
+
+def clock() -> str:
+    return time.strftime("%H:%M:%S")
+
+
+# --- the prompt ---------------------------------------------------------------
+
+COMMON = """You are executing ONE task from the project's task board, inside the
+repository you were started in: {root}
+
+THE TASK FILE: {path}
+(id {id}, title "{title}"). Read it first. The owner's request is the text
+before the first "## " heading; the sections after it (Plan, Questions,
+Answers, Feedback, Result, Run) are the task's history - the latest Answers
+and Feedback override earlier plans. The request may be written in Czech;
+produce code, identifiers, comments, UI strings and commit messages in
+English unless the project's own conventions (CLAUDE.md) say otherwise.
+
+Rules for the task file:
+- never rewrite the request or an earlier section; only APPEND new sections
+  at the very end, each starting with a heading exactly like
+  "## Plan (agent · {now})"  - the kind, then "(agent · date time)";
+- do not touch its frontmatter (the lines between the --- markers) and do not
+  commit it - the runner does both;
+- do not create other files under tasks/.
+
+Stay strictly within the scope of this task. Do not start services, do not
+deploy, do not push, unless the request explicitly asks for it.
+"""
+
+TRIAGE = """MODE: TRIAGE. Do NOT modify anything in the repository except the task
+file. Explore the codebase as much as you need, then append to the task file:
+
+## Plan (agent · {now})
+- one to three sentences: what the owner wants, in your words
+- numbered steps, each naming the files or modules it touches
+- a line "verify: <command>" with a non-interactive command that proves the
+  work (build, test, import check) - omit the line when nothing sensible exists
+- risks, things that could break, open points you decided yourself
+- size: S (under an hour), M (a few hours) or L (a day or more)
+
+If something must be decided by the owner BEFORE the work can start, also
+append "## Questions (agent · {now})" with numbered, specific questions,
+each answerable in one sentence. Ask only what you cannot decide from the
+code and the conventions; otherwise decide and note the decision in the
+plan. Do not ask whether to proceed.
+"""
+
+RUN = """MODE: IMPLEMENT. Carry out the request following the Plan and the owner's
+Answers and Feedback (latest wins). Work until it is done: make sure the
+project builds and the relevant tests pass as far as you can run them here.
+Then COMMIT only the files of your change - never `git add -A`, never the
+tasks/ directory - with a message prefixed "task {id}: ". Then append:
+
+## Result (agent · {now})
+- what was done, briefly
+- commits: <short hashes>
+- how to check it (URL, command, what to look at)
+- anything left out, and why
+
+If - and only if - you genuinely cannot proceed without the owner (a
+decision, missing access, a request that contradicts the code), do not
+guess: leave the tree consistent (commit the finished part and say so, or
+revert), append "## Questions (agent · {now})" with numbered, specific
+questions, and end your final message with a single line containing exactly:
+{marker}
+"""
+
+
+def build_prompt(task: dict, root: str, mode: str) -> str:
+    fields = {"root": root, "path": task["path"], "id": task["id"], "title": task["title"],
+              "now": T.now(), "marker": NEED_ATTENTION}
+    return COMMON.format(**fields) + "\n" + (TRIAGE if mode == "triage" else RUN).format(**fields)
+
+
+# --- claude session -----------------------------------------------------------
+
+class Stats:
+    def __init__(self) -> None:
+        self.tool_calls = self.turns = 0
+        self.input_tokens = self.output_tokens = self.cache_read = 0
+        self.cost = 0.0
+        self.result_text = ""
+        self.subtype = ""
+        self.limit_hit = False
+
+    def absorb_result(self, ev: dict) -> None:
+        self.turns = ev.get("num_turns") or 0
+        self.result_text = ev.get("result") or ""
+        self.subtype = ev.get("subtype") or ""
+        u = ev.get("usage") or {}
+        self.input_tokens += u.get("input_tokens", 0) or 0
+        self.output_tokens += u.get("output_tokens", 0) or 0
+        self.cache_read += u.get("cache_read_input_tokens", 0) or 0
+        self.cost = ev.get("total_cost_usd") or 0.0
+        if USAGE_LIMIT_RE.search(self.result_text):
+            self.limit_hit = True
+
+    def line(self) -> str:
+        return (f"{self.turns} turns, {self.tool_calls} tool calls, tokens in {self.input_tokens:,} / "
+                f"out {self.output_tokens:,} (cache read {self.cache_read:,})")
+
+
+def describe(ev: dict, stats: Stats) -> str | None:
+    """One human line per interesting stream-json event, or None."""
+    t = ev.get("type")
+    if t == "system" and ev.get("subtype") == "init":
+        return f"session started (model {ev.get('model', '?')})"
+    if t == "assistant":
+        out = []
+        for block in (ev.get("message") or {}).get("content", []):
+            if block.get("type") == "tool_use":
+                stats.tool_calls += 1
+                inp = block.get("input") or {}
+                detail = str(inp.get("file_path") or inp.get("command") or inp.get("pattern")
+                             or inp.get("description") or "").replace("\n", " ")[:100]
+                out.append(f"#{stats.tool_calls:<3} {block.get('name', '?')}  {detail}".rstrip())
+            elif block.get("type") == "text":
+                text = (block.get("text") or "").strip()
+                if text:
+                    if USAGE_LIMIT_RE.search(text):
+                        stats.limit_hit = True
+                    out.append(text[:400].replace("\n", "\n           "))
+        return "\n".join(out) if out else None
+    if t == "result":
+        stats.absorb_result(ev)
+        dur = ev.get("duration_ms")
+        d = f"{dur / 1000:.0f}s" if isinstance(dur, (int, float)) else "?"
+        return f"session {stats.subtype}: {d}, {stats.line()}"
+    return None
+
+
+def run_claude(prompt: str, root: str, log_path: str, timeout_s: int, max_turns: int) -> tuple[bool, Stats]:
+    exe = shutil.which("claude") or os.path.join(HOME, ".local", "bin", "claude")
+    cmd = [exe, "-p", "--dangerously-skip-permissions", "--output-format", "stream-json",
+           "--verbose", "--max-turns", str(max_turns)]
+    env = dict(os.environ, PATH=os.path.join(HOME, ".local", "bin") + ":" + os.environ.get("PATH", ""))
+    env.pop("ANTHROPIC_API_KEY", None)          # subscription auth, like the interactive windows
+    env.pop("CLAUDECODE", None)                 # allow starting from inside another agent session
+    stats = Stats()
+    started = time.monotonic()
+    proc = subprocess.Popen(cmd, cwd=root, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
+                            bufsize=1, start_new_session=True)
+    assert proc.stdin and proc.stdout
+    proc.stdin.write(prompt)
+    proc.stdin.close()
+    ok = True
+    with open(log_path, "a", encoding="utf-8") as log:
+        for line in proc.stdout:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                ev = json.loads(raw)
+            except ValueError:
+                log.write(f"{clock()} {raw}\n")
+                print(f"  {DIM}{clock()}{RESET} {raw[:300]}")
+                if USAGE_LIMIT_RE.search(raw):
+                    stats.limit_hit = True
+                continue
+            msg = describe(ev, stats)
+            if msg:
+                log.write(f"{clock()} {msg}\n")
+                log.flush()
+                colour = CYAN if msg.startswith("#") else (DIM if msg.startswith("session") else "")
+                print(f"  {DIM}{clock()}{RESET} {colour}{msg}{RESET}", flush=True)
+            if time.monotonic() - started > timeout_s:
+                os.killpg(proc.pid, signal.SIGTERM)
+                log.write(f"{clock()} TIMEOUT after {timeout_s}s\n")
+                print(f"  {RED}TIMEOUT after {timeout_s}s{RESET}")
+                ok = False
+                break
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+    return ok and proc.returncode == 0 and stats.subtype not in ("error_max_turns", "error_during_execution"), stats
+
+
+# --- verify -----------------------------------------------------------------------
+
+def run_verify(cmd: str, root: str, log_path: str) -> tuple[bool, str]:
+    print(f"\n{BOLD}verify:{RESET} {cmd}")
+    with open(log_path, "a", encoding="utf-8") as log:
+        log.write(f"{clock()} verify: {cmd}\n")
+    try:
+        r = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True, timeout=1800,
+                           env=dict(os.environ, PATH=os.path.join(HOME, ".local", "bin") + ":" + os.environ.get("PATH", "")))
+        out = (r.stdout or "") + (r.stderr or "")
+        rc = r.returncode
+    except subprocess.TimeoutExpired:
+        out, rc = "verify timed out after 30 min", 1
+    with open(log_path, "a", encoding="utf-8") as log:
+        log.write(out + f"\n{clock()} verify exit {rc}\n")
+    tail = "\n".join(out.strip().splitlines()[-25:])
+    print(tail)
+    print(f"  {GREEN if rc == 0 else RED}verify exit {rc}{RESET}")
+    return rc == 0, tail
+
+
+# --- bookkeeping --------------------------------------------------------------
+
+def notify(text: str) -> None:
+    """Best effort Telegram message through the bot (no token: nothing happens)."""
+    exe = os.path.join(HOME, ".local", "bin", "fractal-telegram")
+    if not os.path.exists(CFG["FRACTAL_TELEGRAM_TOKEN_FILE"]) or not os.path.exists(exe):
+        return
+    try:
+        subprocess.run([exe, "notify", text], timeout=30, capture_output=True)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def plan_verify_line(task: dict) -> str:
+    """A "verify: <cmd>" line from the newest Plan section, if the agent wrote one."""
+    for s in reversed(task["sections"]):
+        if s["kind"] == "Plan":
+            m = re.search(r"^\s*-?\s*`?verify:`?\s*`?(.+?)`?\s*$", s["text"], re.M | re.I)
+            return m.group(1).strip() if m else ""
+    return ""
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("project")
+    ap.add_argument("task_id")
+    ap.add_argument("mode", choices=("triage", "run"))
+    ap.add_argument("--keep", type=int, default=KEEP_WINDOW, help="seconds to keep the window open afterwards")
+    a = ap.parse_args()
+
+    proj = T.project(a.project)
+    if not proj:
+        sys.exit(f"{a.project}: not a registered project with a tasks/ directory")
+    root = proj["root"]
+    task = T.find(proj, a.task_id)
+    if not task:
+        sys.exit(f"{a.project}: no task {a.task_id}")
+
+    os.makedirs(os.path.join(T.tasks_dir(proj), T.LOGS_DIRNAME), exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    log_path = os.path.join(T.tasks_dir(proj), T.LOGS_DIRNAME, f"{task['id']}-{a.mode}-{stamp}.log")
+    timeout_s = int(task.get("timeout_minutes") or DEFAULT_TIMEOUT[a.mode]) * 60
+
+    print(f"{BOLD}task {task['id']}  {task['title']}{RESET}")
+    print(f"{DIM}{a.project} · {a.mode} · {task['path']}{RESET}")
+    print(f"{DIM}log {log_path} · timeout {timeout_s // 60} min{RESET}\n")
+
+    # 1. mark as running (the board may have done it already; idempotent)
+    task["status"] = "triage" if a.mode == "triage" else "in-progress"
+    task["phase"] = "triage" if a.mode == "triage" else "dev"
+    T.write(task)
+    head_before = T.git(root, "rev-parse", "HEAD").stdout.strip()
+    questions_before = sum(1 for s in task["sections"] if s["kind"] == "Questions")
+    started = time.monotonic()
+
+    # 2. the session
+    ok, stats = run_claude(build_prompt(task, root, a.mode), root, log_path, timeout_s, MAX_TURNS[a.mode])
+    took = int(time.monotonic() - started)
+
+    # 3. what did the agent leave behind?
+    task = T.load(task["path"])
+    new_questions = sum(1 for s in task["sections"] if s["kind"] == "Questions") > questions_before
+    has_plan = any(s["kind"] == "Plan" for s in task["sections"])
+    has_result = any(s["kind"] == "Result" for s in task["sections"])
+    head_after = T.git(root, "rev-parse", "HEAD").stdout.strip()
+    commits = ""
+    if head_before and head_after and head_before != head_after:
+        commits = T.git(root, "log", "--oneline", f"{head_before}..{head_after}").stdout.strip()
+
+    notes = []
+    if a.mode == "triage":
+        if ok and has_plan:
+            status = "review"
+            if not task.get("verify"):
+                v = plan_verify_line(task)
+                if v:
+                    task["verify"] = v
+                    notes.append(f"verify taken from the plan: `{v}`")
+        else:
+            status = "need-attention"
+            notes.append("the agent produced no plan" if ok else "the session failed")
+    else:
+        if not ok:
+            status = "need-attention"
+            notes.append("the session failed or timed out")
+        elif new_questions or NEED_ATTENTION in (stats.result_text or ""):
+            status = "need-attention"
+            notes.append("the agent asked questions")
+        else:
+            if task.get("verify"):
+                vok, tail = run_verify(task["verify"], root, log_path)
+                if vok:
+                    status = "review"
+                else:
+                    status = "need-attention"
+                    T.append(task, "Verify", f"`{task['verify']}` failed:\n\n```\n{tail}\n```", who="runner")
+                    notes.append("verify failed")
+            else:
+                status = "review"
+            if not has_result:
+                notes.append("no Result section was written")
+    if stats.limit_hit:
+        notes.append("usage limit hit during the session")
+
+    # 4. record the run in the file, set the status, commit the file
+    meta = [f"- mode: {a.mode}", f"- outcome: {status}",
+            f"- duration: {took // 60} min {took % 60} s", f"- {stats.line()}",
+            f"- log: {os.path.relpath(log_path, root)}"]
+    if stats.cost:
+        meta.append(f"- cost: ${stats.cost:.2f}")
+    if commits:
+        meta.append("- commits:\n" + "\n".join("  " + c for c in commits.splitlines()))
+    if notes:
+        meta.append("- note: " + "; ".join(notes))
+    if not ok and stats.result_text:
+        meta.append("- last message: " + stats.result_text.strip()[:600].replace("\n", " "))
+    T.append(task, "Run", "\n".join(meta), who="runner")
+    task["status"] = status
+    T.write(task)
+    sha = T.commit_task_file(root, task["path"], f"task {task['id']}: {a.mode} -> {status}")
+
+    colour = GREEN if status == "review" else YELLOW
+    print(f"\n{colour}{BOLD}{status}{RESET}  {'; '.join(notes) if notes else ''}  "
+          f"{DIM}{took // 60} min · {stats.line()}{' · commit ' + sha if sha else ''}{RESET}")
+
+    what = "plan is ready" if (a.mode == "triage" and status == "review") else \
+           "work is ready for review" if status == "review" else "needs your attention"
+    notify(f"{'✓' if status == 'review' else '⚠'} {a.project} · task {task['id']} {task['title']}: {what}"
+           f"{' (' + '; '.join(notes) + ')' if notes and status != 'review' else ''}\n{URL}tasks.html#{a.project}/{task['id']}")
+
+    if a.keep > 0:
+        print(f"{DIM}this window closes in {a.keep} s (Ctrl-C keeps it: a shell follows){RESET}")
+        try:
+            time.sleep(a.keep)
+        except KeyboardInterrupt:
+            os.execvp("bash", ["bash"])
+    return 0 if status == "review" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

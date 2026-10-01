@@ -13,7 +13,7 @@
 #   3. copies www/* into $FRACTAL_WWW (a copy, not a symlink: nginx cannot
 #      follow a link into a drwx------ home directory)
 #   4. renders systemd/user/* into ~/.config/systemd/user and (re)starts the
-#      core services: fractal-ctl, fractal-files, fractal-upload, fractal-term,
+#      core services: fractal-ctl, fractal-files, fractal-upload, fractal-tasks, fractal-term,
 #      fractal-status.timer, fractal-autostart; the usage timers only when the
 #      corresponding CLI (claude / codex) is installed; fractal-telegram only
 #      when a bot token file exists (fractal-telegram configure <token>)
@@ -49,9 +49,9 @@ fi
 . "$REPO/lib/fractal-env.sh"
 FRACTAL_TTYD="$(command -v ttyd || echo /usr/local/bin/ttyd)"
 export HOME USER FRACTAL_WWW FRACTAL_URL FRACTAL_ALLOW FRACTAL_UPLOADS FRACTAL_STATE_DIR \
-       FRACTAL_CTL_PORT FRACTAL_FILES_PORT FRACTAL_UPLOAD_PORT FRACTAL_TERM_PORT FRACTAL_TTYD \
+       FRACTAL_CTL_PORT FRACTAL_FILES_PORT FRACTAL_UPLOAD_PORT FRACTAL_TERM_PORT FRACTAL_TASKS_PORT FRACTAL_TTYD \
        FRACTAL_TELEGRAM_TOKEN_FILE
-VARS='${HOME} ${USER} ${FRACTAL_WWW} ${FRACTAL_URL} ${FRACTAL_UPLOADS} ${FRACTAL_STATE_DIR} ${FRACTAL_CTL_PORT} ${FRACTAL_FILES_PORT} ${FRACTAL_UPLOAD_PORT} ${FRACTAL_TERM_PORT} ${FRACTAL_TTYD} ${FRACTAL_ALLOW_LINES} ${FRACTAL_TELEGRAM_TOKEN_FILE}'
+VARS='${HOME} ${USER} ${FRACTAL_WWW} ${FRACTAL_URL} ${FRACTAL_UPLOADS} ${FRACTAL_STATE_DIR} ${FRACTAL_CTL_PORT} ${FRACTAL_FILES_PORT} ${FRACTAL_UPLOAD_PORT} ${FRACTAL_TERM_PORT} ${FRACTAL_TASKS_PORT} ${FRACTAL_TTYD} ${FRACTAL_ALLOW_LINES} ${FRACTAL_TELEGRAM_TOKEN_FILE}'
 render() { envsubst "$VARS" < "$1" > "$2"; }
 
 # --- dependencies ------------------------------------------------------------
@@ -102,7 +102,7 @@ for f in "$REPO"/systemd/user/*; do
     render "$f" "$UNIT_DIR/$(basename "$f")"
 done
 systemctl --user daemon-reload
-CORE="fractal-ctl.service fractal-files.service fractal-upload.service fractal-autostart.service fractal-status.timer"
+CORE="fractal-ctl.service fractal-files.service fractal-upload.service fractal-tasks.service fractal-autostart.service fractal-status.timer"
 command -v ttyd >/dev/null && CORE="$CORE fractal-term.service"
 for u in $CORE; do
     systemctl --user enable "$u" >/dev/null 2>&1 || true

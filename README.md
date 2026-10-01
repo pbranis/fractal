@@ -27,8 +27,15 @@ to add a project.
   pastes text into the agent's tmux window, *ask* runs a headless query and
   streams the answer back. Buttons can run named commands from the registry.
 - **Telegram bot** (optional) with the same verbs: `/status`, `/start`,
-  `/stop`, `/run`, `/send`, `/ask` from your phone, plus a ping when a project
-  dies or comes back on its own. Long polling, so no public address is needed.
+  `/stop`, `/run`, `/send`, `/ask`, `/task` from your phone, plus a ping when
+  a project dies or comes back on its own, or a task run ends. Long polling,
+  so no public address is needed.
+- **Task board** (`/tasks.html`): a small kanban per project over markdown
+  files in `<root>/tasks/`. A new task gets a triage session (plan +
+  questions, no code changes), you approve it into the queue, the agent
+  implements it in a watchable tmux window, verifies, and hands it back for
+  review. Tasks can be dictated through the Telegram bot.
+  See [docs/tasks.md](docs/tasks.md).
 - **Claude sessions:** every running Claude Code session on the machine with
   its state (working / waiting, for how long), title, last prompt and answer,
   a button into its exact tmux pane and an on-demand one-line summary.
@@ -52,6 +59,7 @@ the tailnet. The plain dashboard is visible from the LAN too.
                          ├─ /ctl/        fractal-ctl     start/stop, agent send/ask, hooks
                          │                  ▲  fractal-telegram (bot, long polling) is a second client
                          ├─ /files/      fractal-files   browse ~ (read + upload only)
+                         ├─ /tasks/      fractal-tasks   task board ──▶ fractal-task-run in tmux
                          └─ /upload/     fractal-upload  drop zone
                                                    ▲
                     all helpers: loopback, run as you, read projects.json

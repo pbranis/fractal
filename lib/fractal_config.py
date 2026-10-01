@@ -33,6 +33,7 @@ DEFAULTS = {
     "FRACTAL_FILES_PORT": "7692",
     "FRACTAL_UPLOAD_PORT": "7690",
     "FRACTAL_TERM_PORT": "7685",
+    "FRACTAL_TASKS_PORT": "7693",
     # coding agent started in the "claude" tmux window of every project
     "FRACTAL_AGENT": "claude",
     "FRACTAL_AGENT_FLAGS": "--dangerously-skip-permissions",

@@ -29,6 +29,7 @@ _fractal_default FRACTAL_CTL_PORT     7691
 _fractal_default FRACTAL_FILES_PORT   7692
 _fractal_default FRACTAL_UPLOAD_PORT  7690
 _fractal_default FRACTAL_TERM_PORT    7685
+_fractal_default FRACTAL_TASKS_PORT   7693
 _fractal_default FRACTAL_AGENT        claude
 _fractal_default FRACTAL_AGENT_FLAGS  "--dangerously-skip-permissions"
 _fractal_default FRACTAL_AGENT_WINDOW claude

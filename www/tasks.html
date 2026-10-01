@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fractal — úkoly</title>
+<link rel="icon" href="data:,">
+<style>
+  :root{
+    --bg:#f9f9f7; --card:#fcfcfb; --border:#e1e0d9; --track:#e1e0d9;
+    --text:#0b0b0b; --text2:#52514e; --muted:#898781;
+    --accent:#2a78d6; --chip:#f0efec; --col:#f3f3f0;
+    --good:#0ca30c; --warn:#fab219; --crit:#d03b3b; --claude:#d97757;
+    --p1:#d03b3b; --p2:#e38a1d; --p3:#2a78d6; --p4:#898781;
+    --drop:#e3eefc;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0d0d0d; --card:#1a1a19; --border:#2c2c2a; --track:#2c2c2a;
+      --text:#ffffff; --text2:#c3c2b7; --muted:#898781;
+      --accent:#3987e5; --chip:#232321; --col:#141413; --claude:#e08a6f;
+      --p3:#5b9cf0; --drop:#1b2a40;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0d0d0d; --card:#1a1a19; --border:#2c2c2a; --track:#2c2c2a;
+    --text:#ffffff; --text2:#c3c2b7; --muted:#898781;
+    --accent:#3987e5; --chip:#232321; --col:#141413; --claude:#e08a6f;
+    --p3:#5b9cf0; --drop:#1b2a40;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+       display:flex;flex-direction:column;min-height:100vh}
+  a{color:var(--accent)}
+  button{font:inherit;color:inherit}
+  code{background:var(--chip);padding:1px 6px;border-radius:5px;font-size:13px;
+       font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+
+  /* ---- top bar ---- */
+  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+         padding:14px 20px 10px;border-bottom:1px solid var(--border);background:var(--card)}
+  header .back{color:var(--muted);text-decoration:none;font-size:14px}
+  header .back:hover{color:var(--text)}
+  header h1{margin:0;font-size:18px;letter-spacing:-.01em}
+  .projs{display:flex;gap:4px;flex-wrap:wrap}
+  .proj{appearance:none;background:none;border:1px solid transparent;border-radius:8px;cursor:pointer;
+        padding:5px 11px;font-size:14px;color:var(--text2)}
+  .proj:hover{background:var(--chip);color:var(--text)}
+  .proj[aria-selected="true"]{background:var(--chip);color:var(--text);font-weight:600;border-color:var(--border)}
+  .proj .n{color:var(--warn);font-size:12px;margin-left:6px;font-variant-numeric:tabular-nums;font-weight:600}
+  .spacer{flex:1}
+  .live{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .live .dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+  .live.on .dot{background:var(--good)}
+  .toggle{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text2)}
+  /* iOS-style switch, as on the dashboard: position carries the state */
+  .sw{position:relative;width:40px;height:24px;padding:0;appearance:none;border:0;border-radius:24px;
+      background:var(--track);cursor:pointer;transition:background .25s}
+  .sw::after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;
+             box-shadow:0 2px 6px rgba(0,0,0,.18);transition:transform .25s}
+  .sw[aria-checked="true"]{background:var(--good)}
+  .sw[aria-checked="true"]::after{transform:translateX(16px)}
+
+  /* ---- quick add ---- */
+  .add{display:flex;gap:10px;padding:14px 20px 0;align-items:center}
+  .add input{flex:1;font:inherit;padding:11px 14px;border:1px solid var(--border);border-radius:10px;
+             background:var(--card);color:var(--text);min-width:0}
+  .add input:focus{outline:2px solid var(--accent);outline-offset:-1px}
+  .add button{padding:10px 16px;border-radius:10px;border:1px solid var(--accent);background:var(--accent);
+              color:#fff;cursor:pointer;font-weight:600;white-space:nowrap}
+  .add button:disabled{opacity:.6;cursor:progress}
+  .hint{padding:4px 20px 0;font-size:12.5px;color:var(--muted)}
+  .err{margin:10px 20px 0;padding:8px 12px;border-radius:8px;background:var(--chip);color:var(--crit);font-size:13px;
+       white-space:pre-wrap}
+  .err:empty{display:none}
+
+  /* ---- board ---- */
+  .board{flex:1;display:grid;gap:12px;padding:14px 20px 24px;
+         grid-template-columns:repeat(6,minmax(200px,1fr));overflow-x:auto;align-items:start}
+  .colsel{display:none}
+  .column{background:var(--col);border:1px solid var(--border);border-radius:12px;min-height:160px;
+          display:flex;flex-direction:column;max-height:calc(100vh - 170px)}
+  .column.over{background:var(--drop);border-color:var(--accent)}
+  .column.nodrop.over{background:var(--col);border-color:var(--crit)}
+  .colhead{display:flex;align-items:center;gap:8px;padding:10px 12px 6px;font-size:13px;font-weight:600;
+           color:var(--text2);text-transform:uppercase;letter-spacing:.05em;position:sticky;top:0}
+  .colhead .cnt{color:var(--muted);font-weight:400;font-variant-numeric:tabular-nums}
+  .colhead .ic{font-size:14px}
+  .cards{padding:4px 8px 10px;display:flex;flex-direction:column;gap:8px;overflow-y:auto;flex:1;min-height:60px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px;cursor:pointer;
+        position:relative;transition:box-shadow .15s,transform .15s}
+  .card:hover{box-shadow:0 2px 10px rgba(0,0,0,.08)}
+  .card[draggable="true"]{cursor:grab}
+  .card.dragging{opacity:.4}
+  .card.placeholder{border:2px dashed var(--accent);background:transparent;height:52px;padding:0}
+  .card .top{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);margin-bottom:3px}
+  .card .id{font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,monospace}
+  .card .title{font-size:14px;line-height:1.35;overflow-wrap:anywhere}
+  .card .meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px;font-size:11.5px;align-items:center}
+  .pri{display:inline-block;padding:0 6px;border-radius:5px;font-weight:600;font-size:11px;line-height:18px;color:#fff}
+  .pri.p1{background:var(--p1)} .pri.p2{background:var(--p2)} .pri.p3{background:var(--p3)} .pri.p4{background:var(--p4)}
+  .tag{display:inline-block;padding:0 7px;border-radius:5px;background:var(--chip);color:var(--text2);line-height:18px}
+  .tag.ask{color:var(--crit);font-weight:600}
+  .tag.ok{color:var(--good);font-weight:600}
+  .tag.run{color:var(--claude);font-weight:600}
+  .spin{display:inline-block;width:10px;height:10px;border:2px solid var(--claude);border-right-color:transparent;
+        border-radius:50%;animation:spin .9s linear infinite;vertical-align:-1px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){.spin{animation:none}}
+  .card .pos{position:absolute;right:10px;top:9px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .empty{color:var(--muted);font-size:13px;padding:10px 12px;text-align:center}
+  .more{appearance:none;background:none;border:0;color:var(--accent);cursor:pointer;font-size:12.5px;padding:6px}
+
+  /* ---- detail drawer ---- */
+  .drawer{position:fixed;top:0;right:0;bottom:0;width:min(640px,100vw);background:var(--card);
+          border-left:1px solid var(--border);box-shadow:-8px 0 30px rgba(0,0,0,.18);transform:translateX(102%);
+          transition:transform .22s ease;display:flex;flex-direction:column;z-index:20}
+  .drawer.open{transform:none}
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.25);opacity:0;pointer-events:none;transition:opacity .2s;z-index:19}
+  .scrim.open{opacity:1;pointer-events:auto}
+  .dhead{padding:14px 18px 10px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:flex-start}
+  .dhead .id{font-family:ui-monospace,Menlo,monospace;color:var(--muted);font-size:13px;margin-top:4px}
+  .dhead h2{margin:0;flex:1;font-size:17px;line-height:1.3;outline:none;border-radius:6px;padding:2px 4px;margin-left:-4px}
+  .dhead h2:focus{background:var(--chip)}
+  .close{appearance:none;border:0;background:none;font-size:22px;line-height:1;color:var(--muted);cursor:pointer;padding:0 4px}
+  .dmeta{display:flex;gap:8px;flex-wrap:wrap;padding:10px 18px 0;font-size:12.5px;color:var(--text2);align-items:center}
+  .dmeta select,.dmeta input{font:inherit;font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid var(--border);
+                             background:var(--card);color:var(--text)}
+  .dmeta input.verify{flex:1;min-width:160px;font-family:ui-monospace,Menlo,monospace;font-size:12px}
+  .acts{display:flex;gap:8px;flex-wrap:wrap;padding:12px 18px 0}
+  .btn{appearance:none;border:1px solid var(--border);background:var(--card);border-radius:8px;padding:7px 12px;
+       cursor:pointer;font-size:13.5px;display:inline-flex;align-items:center;gap:6px;text-decoration:none;color:var(--text)}
+  .btn:hover{background:var(--chip)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.good{border-color:var(--good);color:var(--good)}
+  .btn.danger{border-color:var(--crit);color:var(--crit)}
+  .btn:disabled{opacity:.5;cursor:default}
+  .dbody{padding:6px 18px 24px;overflow-y:auto;flex:1}
+  .sec{margin-top:18px}
+  .sec h3{margin:0 0 6px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:600;
+          display:flex;align-items:center;gap:8px}
+  .sec h3 .who{text-transform:none;letter-spacing:0;font-weight:400}
+  .sec h3 .edit{margin-left:auto;appearance:none;border:0;background:none;color:var(--accent);cursor:pointer;font-size:12px;
+                text-transform:none;letter-spacing:0}
+  .md{font-size:14px;line-height:1.55;overflow-wrap:anywhere}
+  .md p{margin:0 0 8px} .md ul,.md ol{margin:0 0 8px;padding-left:22px} .md li{margin:2px 0}
+  .md pre{background:var(--chip);padding:10px 12px;border-radius:8px;overflow-x:auto;font-size:12.5px;margin:0 0 8px}
+  .md h4{margin:10px 0 4px;font-size:14px}
+  .md hr{border:0;border-top:1px solid var(--border);margin:8px 0}
+  .sec.plan{border-left:3px solid var(--accent);padding-left:12px}
+  .sec.questions{border-left:3px solid var(--warn);padding-left:12px}
+  .sec.answers,.sec.feedback{border-left:3px solid var(--good);padding-left:12px}
+  .sec.result{border-left:3px solid var(--good);padding-left:12px}
+  .sec.run{color:var(--text2);font-size:13px}
+  .sec.run .md{font-size:13px}
+  .sec.verify,.sec.error{border-left:3px solid var(--crit);padding-left:12px}
+  textarea{width:100%;font:inherit;font-size:14px;padding:10px 12px;border:1px solid var(--border);border-radius:9px;
+           background:var(--bg);color:var(--text);resize:vertical;min-height:84px}
+  textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+  .reply{margin-top:10px;display:flex;flex-direction:column;gap:8px}
+  .reply .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .reply .note{font-size:12.5px;color:var(--muted);flex:1}
+  .log{background:#0d0d0d;color:#d7d7d0;font:12px/1.45 ui-monospace,Menlo,monospace;padding:10px 12px;border-radius:8px;
+       max-height:320px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+  .term{font-size:12.5px}
+  .foot{padding:8px 18px 12px;font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
+
+  /* ---- mobile: one column at a time, buttons instead of drag ---- */
+  @media (max-width:860px){
+    header{padding:12px 14px 8px;gap:10px}
+    header h1{font-size:16px}
+    .projs{order:5;width:100%;overflow-x:auto;flex-wrap:nowrap}
+    .add{padding:12px 14px 0}
+    .hint{display:none}
+    .colsel{display:flex;gap:4px;padding:10px 14px 0;overflow-x:auto;-webkit-overflow-scrolling:touch}
+    .colsel button{appearance:none;border:1px solid var(--border);background:var(--card);border-radius:8px;padding:6px 10px;
+                   font-size:13px;color:var(--text2);white-space:nowrap;cursor:pointer}
+    .colsel button[aria-selected="true"]{background:var(--chip);color:var(--text);font-weight:600;border-color:var(--accent)}
+    .colsel button .n{color:var(--muted);font-size:12px;margin-left:5px}
+    .colsel button.hot .n{color:var(--warn);font-weight:600}
+    .board{display:block;padding:10px 14px 24px;overflow:visible}
+    .column{display:none;max-height:none}
+    .column.shown{display:flex}
+    .colhead{display:none}
+    .card[draggable="true"]{cursor:pointer}
+    .drawer{width:100vw}
+    .dbody{padding-bottom:40px}
+  }
+</style>
+</head>
+<body>
+<header>
+  <a class="back" href="/">‹ rozcestník</a>
+  <h1>Úkoly</h1>
+  <nav class="projs" id="projs" aria-label="Projekty"></nav>
+  <span class="spacer"></span>
+  <label class="toggle" title="Když je fronta zapnutá, agent si po dokončení vezme další úkol z Fronty sám">
+    <span>Fronta běží sama</span>
+    <button class="sw" id="auto" type="button" role="switch" aria-checked="false" aria-label="automatická fronta"></button>
+  </label>
+  <span class="live" id="live"><span class="dot"></span><span id="live-txt">…</span></span>
+</header>
+
+<form class="add" id="add" autocomplete="off">
+  <input id="add-in" placeholder="Nový úkol: napiš nebo nadiktuj, Enter založí (agent hned připraví plán)" maxlength="4000">
+  <button type="submit" id="add-btn">+ Přidat</button>
+</form>
+<div class="hint">První věta je název, zbytek zadání. Úkol jde do <b>Triage</b>: agent si projde kód, napíše plán a případné otázky, ty ho pak schválíš do fronty. Karty se přetahují mezi Backlogem, Frontou a Hotovo; Triage spouští znovu plánování.</div>
+<div class="err" id="err"></div>
+
+<nav class="colsel" id="colsel" aria-label="Sloupce"></nav>
+<main class="board" id="board"></main>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-label="Detail úkolu">
+  <div class="dhead">
+    <span class="id" id="d-id"></span>
+    <h2 id="d-title" contenteditable="true" spellcheck="false" title="Klikni a přepiš název; Enter uloží"></h2>
+    <button class="close" id="d-close" aria-label="zavřít">×</button>
+  </div>
+  <div class="dmeta" id="d-meta"></div>
+  <div class="acts" id="d-acts"></div>
+  <div class="dbody" id="d-body"></div>
+  <div class="foot" id="d-foot"></div>
+</aside>
+
+<script>
+/* The board is a view over markdown files in <project>/tasks/. Everything
+   here calls fractal-tasks (/tasks/, tailnet only) and re-renders on its
+   server-sent events; there is no local state worth keeping except the
+   chosen project and the open task (both in the URL hash). */
+const API = "/tasks";
+const COLUMNS = [
+  {key: "triage",   label: "Triage",     ic: "◔", statuses: ["triage"],                     drop: true,
+   hint: "agent čte kód a píše plán"},
+  {key: "backlog",  label: "Backlog",    ic: "▫", statuses: ["backlog"],                    drop: true,
+   hint: "schváleno, zatím nezařazeno"},
+  {key: "todo",     label: "Fronta",     ic: "≡", statuses: ["todo"],                       drop: true, ordered: true,
+   hint: "pořadí = pořadí spuštění"},
+  {key: "running",  label: "Běží",       ic: "◐", statuses: ["in-progress"],                drop: false,
+   hint: "agent pracuje"},
+  {key: "waiting",  label: "Čeká na mě", ic: "⚑", statuses: ["review", "need-attention"],   drop: false, hot: true,
+   hint: "schválit, odpovědět, převzít"},
+  {key: "done",     label: "Hotovo",     ic: "✓", statuses: ["done", "canceled"],           drop: true,
+   hint: ""},
+];
+const STATUS_CS = {triage: "triage", backlog: "backlog", todo: "ve frontě", "in-progress": "běží",
+                   "need-attention": "čeká na odpověď", review: "ke schválení", done: "hotovo", canceled: "zrušeno"};
+const KIND_CS = {Plan: "Plán", Questions: "Otázky", Answers: "Odpovědi", Feedback: "Připomínky",
+                 Result: "Výsledek", Run: "Běh", Verify: "Ověření selhalo", Error: "Chyba"};
+const PRI_CS = {1: "urgent", 2: "vysoká", 3: "normální", 4: "nízká"};
+
+let projects = [], current = null, tasks = [], openId = null, showAllDone = false, mobileCol = "waiting";
+let es = null, pollTimer = null, logTimer = null;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const errBox = $("err");
+function showErr(msg){ errBox.textContent = msg || ""; if (msg) setTimeout(() => { if (errBox.textContent === msg) errBox.textContent = ""; }, 8000); }
+
+async function api(method, path, body){
+  const r = await fetch(API + path, {method, cache: "no-store",
+    headers: body ? {"Content-Type": "application/json"} : {}, body: body ? JSON.stringify(body) : undefined});
+  let d = {};
+  try { d = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error(d.error || (r.status === 403 ? "Jen z tailnetu (403)" : "HTTP " + r.status));
+  return d;
+}
+
+/* ---- tiny markdown: headings, lists, code fences, paragraphs, inline code/bold/links ---- */
+function inline(s){
+  return esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/(https?:\/\/[^\s<)]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+}
+function md(text){
+  const lines = String(text || "").split("\n"), out = [];
+  let list = null, para = [], code = null;
+  const flushP = () => { if (para.length) { out.push("<p>" + para.map(inline).join("<br>") + "</p>"); para = []; } };
+  const flushL = () => { if (list) { out.push(`<${list.t}>` + list.items.map(i => "<li>" + inline(i) + "</li>").join("") + `</${list.t}>`); list = null; } };
+  for (const raw of lines) {
+    if (code !== null) { if (/^```/.test(raw)) { out.push("<pre>" + esc(code.join("\n")) + "</pre>"); code = null; } else code.push(raw); continue; }
+    if (/^```/.test(raw)) { flushP(); flushL(); code = []; continue; }
+    const l = raw.replace(/\s+$/, "");
+    if (!l.trim()) { flushP(); flushL(); continue; }
+    let m;
+    if ((m = l.match(/^\s*[-*]\s+(.*)$/))) { flushP(); if (!list || list.t !== "ul") { flushL(); list = {t: "ul", items: []}; } list.items.push(m[1]); continue; }
+    if ((m = l.match(/^\s*\d+[.)]\s+(.*)$/))) { flushP(); if (!list || list.t !== "ol") { flushL(); list = {t: "ol", items: []}; } list.items.push(m[1]); continue; }
+    if ((m = l.match(/^#{1,6}\s+(.*)$/))) { flushP(); flushL(); out.push("<h4>" + inline(m[1]) + "</h4>"); continue; }
+    if (/^---+$/.test(l.trim())) { flushP(); flushL(); out.push("<hr>"); continue; }
+    if (list && /^\s{2,}/.test(raw)) { list.items[list.items.length - 1] += " " + l.trim(); continue; }
+    flushL(); para.push(l.trim());
+  }
+  if (code !== null) out.push("<pre>" + esc(code.join("\n")) + "</pre>");
+  flushP(); flushL();
+  return out.join("");
+}
+
+/* ---- data ---- */
+async function loadProjects(){
+  const d = await api("GET", "/projects");
+  projects = d.projects || [];
+  renderProjects();
+  if (!current || !projects.some(p => p.name === current)) current = projects[0]?.name || null;
+}
+async function loadTasks(){
+  if (!current) { tasks = []; renderBoard(); return; }
+  const d = await api("GET", `/${current}/tasks`);
+  tasks = d.tasks || [];
+  const p = projects.find(x => x.name === current);
+  if (p) { p.counts = d.project.counts; p.settings = d.project.settings; p.running = d.project.running; }
+  renderProjects();
+  renderBoard();
+  if (openId) renderDetail();
+}
+async function refresh(){
+  try { await loadProjects(); await loadTasks(); showErr(""); }
+  catch (e) { showErr(String(e.message || e)); }
+}
+function waitingCount(p){ return (p.counts?.review || 0) + (p.counts?.["need-attention"] || 0); }
+
+/* ---- header ---- */
+function renderProjects(){
+  $("projs").innerHTML = projects.map(p => {
+    const n = waitingCount(p);
+    return `<button class="proj" role="tab" data-p="${esc(p.name)}" aria-selected="${p.name === current}"
+      title="${esc(p.group || "")}">${esc(p.title)}${n ? `<span class="n">${n}</span>` : ""}</button>`;
+  }).join("") || `<span class="hint" style="padding:0">Žádný projekt nemá složku <code>tasks/</code>.</span>`;
+  const p = projects.find(x => x.name === current);
+  $("auto").setAttribute("aria-checked", String(!!p?.settings?.auto));
+  document.title = `fractal — úkoly${p ? " · " + p.title : ""}`;
+}
+$("projs").addEventListener("click", e => {
+  const b = e.target.closest(".proj"); if (!b) return;
+  current = b.dataset.p; openId = null; closeDrawer(); setHash(); loadTasks().catch(e => showErr(e.message));
+});
+$("auto").addEventListener("click", async () => {
+  const p = projects.find(x => x.name === current); if (!p) return;
+  try { p.settings = await api("POST", `/${current}/settings`, {auto: !p.settings.auto}); renderProjects(); }
+  catch (e) { showErr(e.message); }
+});
+
+/* ---- quick add ---- */
+$("add").addEventListener("submit", async e => {
+  e.preventDefault();
+  const inp = $("add-in"), text = inp.value.trim();
+  if (!text || !current) return;
+  const first = text.split(/(?<=[.!?])\s+|\n/)[0].trim();
+  const title = first.length > 110 ? first.slice(0, 110) : first;
+  $("add-btn").disabled = true;
+  try {
+    const t = await api("POST", `/${current}/tasks`, {title, request: text});
+    inp.value = "";
+    await loadTasks();
+    openId = t.id; setHash(); renderDetail(); openDrawer();
+  } catch (err) { showErr(err.message); }
+  finally { $("add-btn").disabled = false; inp.focus(); }
+});
+
+/* ---- board ---- */
+function byOrder(a, b){ return (a.order || 0) - (b.order || 0) || String(a.id).localeCompare(String(b.id)); }
+function openQuestions(t){
+  // questions after the last answer are still open
+  let open = 0;
+  for (const s of t.sections || []) { if (s.kind === "Questions") open++; else if (s.kind === "Answers") open = 0; }
+  return open;
+}
+function cardTags(t){
+  const tags = [];
+  if (t.run) tags.push(`<span class="tag run"><span class="spin"></span> ${t.status === "triage" ? "plánuje" : "pracuje"}</span>`);
+  else if (t.status === "triage" || t.status === "in-progress") tags.push(`<span class="tag">čeká na spuštění</span>`);
+  if (t.status === "review") tags.push(`<span class="tag ok">${t.phase === "triage" ? "plán ke schválení" : "ke schválení"}</span>`);
+  if (t.status === "need-attention") {
+    const q = openQuestions(t);
+    tags.push(`<span class="tag ask">${q ? (q === 1 ? "1 otázka" : q + " otázek") : "potřebuje zásah"}</span>`);
+  }
+  if (t.status === "canceled") tags.push(`<span class="tag">zrušeno</span>`);
+  if (t.assignee && t.assignee !== "claude") tags.push(`<span class="tag">${esc(t.assignee)}</span>`);
+  return tags.join("");
+}
+function card(t, pos){
+  const col = COLUMNS.find(c => c.statuses.includes(t.status));
+  const draggable = !t.run && t.status !== "in-progress";
+  return `<article class="card" data-id="${esc(t.id)}" draggable="${draggable}" tabindex="0">
+    <div class="top"><span class="id">${esc(t.id)}</span>${pos ? `<span class="pos">${pos}.</span>` : ""}</div>
+    <div class="title">${esc(t.title)}</div>
+    <div class="meta"><span class="pri p${t.priority || 3}" title="priorita: ${PRI_CS[t.priority || 3]}">P${t.priority || 3}</span>${cardTags(t)}</div>
+  </article>`;
+}
+function renderBoard(){
+  const board = $("board");
+  const recent = Date.now() - 14 * 86400e3;
+  board.innerHTML = COLUMNS.map(c => {
+    let list = tasks.filter(t => c.statuses.includes(t.status)).sort(byOrder);
+    let hidden = 0;
+    if (c.key === "done") {
+      list = list.filter(t => t.status === "done").concat(list.filter(t => t.status === "canceled"));
+      list.sort((a, b) => String(b.updated || "").localeCompare(String(a.updated || "")));
+      if (!showAllDone) {
+        const keep = list.filter(t => t.status === "done" && new Date((t.updated || "").replace(" ", "T")).getTime() > recent);
+        hidden = list.length - keep.length; list = keep;
+      }
+    }
+    if (c.key === "waiting") list.sort((a, b) => (a.status === "need-attention" ? 0 : 1) - (b.status === "need-attention" ? 0 : 1) || byOrder(a, b));
+    return `<section class="column ${c.drop ? "" : "nodrop"} ${mobileCol === c.key ? "shown" : ""}" data-col="${c.key}">
+      <div class="colhead"><span class="ic">${c.ic}</span>${c.label}<span class="cnt">${list.length}</span></div>
+      <div class="cards">
+        ${list.map((t, i) => card(t, c.ordered ? i + 1 : 0)).join("") || `<div class="empty">${esc(c.hint || "—")}</div>`}
+        ${hidden ? `<button class="more" data-more="1">+ ${hidden} starších a zrušených</button>` : ""}
+        ${c.key === "done" && showAllDone && list.length ? `<button class="more" data-more="0">jen posledních 14 dní</button>` : ""}
+      </div></section>`;
+  }).join("");
+  $("colsel").innerHTML = COLUMNS.map(c => {
+    const n = tasks.filter(t => c.statuses.includes(t.status)).length;
+    return `<button data-col="${c.key}" aria-selected="${mobileCol === c.key}" class="${c.hot && n ? "hot" : ""}">${c.ic} ${c.label}<span class="n">${n}</span></button>`;
+  }).join("");
+  wireDnD();
+}
+$("colsel").addEventListener("click", e => {
+  const b = e.target.closest("button[data-col]"); if (!b) return;
+  mobileCol = b.dataset.col; renderBoard();
+});
+$("board").addEventListener("click", e => {
+  const more = e.target.closest(".more");
+  if (more) { showAllDone = more.dataset.more === "1"; renderBoard(); return; }
+  const c = e.target.closest(".card"); if (!c || c.classList.contains("placeholder")) return;
+  openId = c.dataset.id; setHash(); renderDetail(); openDrawer();
+});
+$("board").addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  const c = e.target.closest(".card"); if (!c) return;
+  openId = c.dataset.id; setHash(); renderDetail(); openDrawer();
+});
+
+/* ---- drag and drop: a dashed placeholder shows where the card lands ---- */
+let dragId = null, placeholder = null;
+function wireDnD(){
+  const board = $("board");
+  board.querySelectorAll('.card[draggable="true"]').forEach(c => {
+    c.addEventListener("dragstart", e => {
+      dragId = c.dataset.id; c.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", dragId);
+      placeholder = document.createElement("div"); placeholder.className = "card placeholder";
+    });
+    c.addEventListener("dragend", () => { c.classList.remove("dragging"); placeholder?.remove(); placeholder = null; dragId = null;
+      board.querySelectorAll(".column.over").forEach(x => x.classList.remove("over")); });
+  });
+  board.querySelectorAll(".column").forEach(col => {
+    const def = COLUMNS.find(c => c.key === col.dataset.col);
+    col.addEventListener("dragover", e => {
+      if (!dragId) return;
+      e.preventDefault();
+      board.querySelectorAll(".column.over").forEach(x => x !== col && x.classList.remove("over"));
+      col.classList.add("over");
+      if (!def.drop || !placeholder) { e.dataTransfer.dropEffect = "none"; return; }
+      e.dataTransfer.dropEffect = "move";
+      const cards = col.querySelector(".cards");
+      const after = [...cards.querySelectorAll(".card:not(.dragging):not(.placeholder)")]
+        .find(x => e.clientY < x.getBoundingClientRect().top + x.offsetHeight / 2);
+      if (after) cards.insertBefore(placeholder, after); else cards.insertBefore(placeholder, cards.querySelector(".more"));
+    });
+    col.addEventListener("dragleave", e => { if (!col.contains(e.relatedTarget)) col.classList.remove("over"); });
+    col.addEventListener("drop", async e => {
+      e.preventDefault(); col.classList.remove("over");
+      if (!dragId || !def.drop) return;
+      const id = dragId, t = tasks.find(x => x.id === id);
+      const target = def.key === "done" ? (t?.status === "canceled" ? "canceled" : "done") : def.statuses[0];
+      const ids = [...col.querySelectorAll(".cards > .card:not(.dragging)")].map(x => x.classList.contains("placeholder") ? id : x.dataset.id)
+        .filter((x, i, a) => a.indexOf(x) === i);
+      placeholder?.remove(); placeholder = null;
+      try { await api("POST", `/${current}/tasks/${id}/move`, {status: target, ids}); await loadTasks(); }
+      catch (err) { showErr(err.message); renderBoard(); }
+    });
+  });
+}
+
+/* ---- detail ---- */
+function openDrawer(){ $("drawer").classList.add("open"); $("scrim").classList.add("open"); }
+function closeDrawer(){ $("drawer").classList.remove("open"); $("scrim").classList.remove("open"); openId = null; setHash(); stopLog(); }
+$("scrim").addEventListener("click", closeDrawer);
+$("d-close").addEventListener("click", closeDrawer);
+document.addEventListener("keydown", e => { if (e.key === "Escape" && openId) closeDrawer(); });
+
+function setHash(){ const h = current ? "#" + current + (openId ? "/" + openId : "") : ""; if (location.hash !== h) history.replaceState(null, "", h || location.pathname); }
+function readHash(){ const m = location.hash.match(/^#([a-z0-9-]+)(?:\/([A-Za-z0-9_.-]+))?$/); if (m) { current = m[1]; openId = m[2] || null; } }
+
+async function act(method, path, body, after){
+  try { await api(method, path, body); await loadTasks(); if (after) after(); }
+  catch (e) { showErr(e.message); }
+}
+function renderDetail(){
+  const t = tasks.find(x => x.id === openId);
+  if (!t) { $("d-body").innerHTML = `<div class="empty">Úkol ${esc(openId)} tu není.</div>`; $("d-acts").innerHTML = ""; $("d-meta").innerHTML = ""; return; }
+  $("d-id").textContent = t.id;
+  const h = $("d-title"); if (document.activeElement !== h) h.textContent = t.title;
+  h.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); h.blur(); } if (e.key === "Escape") { h.textContent = t.title; h.blur(); } };
+  h.onblur = () => { const v = h.textContent.trim(); if (v && v !== t.title) act("PATCH", `/${current}/tasks/${t.id}`, {title: v}); else h.textContent = t.title; };
+
+  const running = !!t.run;
+  $("d-meta").innerHTML = `
+    <span>stav: <b>${esc(STATUS_CS[t.status] || t.status)}</b>${t.phase === "triage" && ["review", "need-attention", "triage"].includes(t.status) ? " (plán)" : ""}</span>
+    <label>priorita <select id="d-pri">${[1, 2, 3, 4].map(p => `<option value="${p}" ${p === (t.priority || 3) ? "selected" : ""}>P${p} ${PRI_CS[p]}</option>`).join("")}</select></label>
+    <label title="Příkaz, který po implementaci musí projít (exit 0)">verify <input class="verify" id="d-verify" value="${esc(t.verify || "")}" placeholder="např. npm run build"></label>
+    <span title="založeno">${esc(t.created || "")}</span>`;
+  $("d-pri").onchange = e => act("PATCH", `/${current}/tasks/${t.id}`, {priority: Number(e.target.value)});
+  $("d-verify").onblur = e => { if (e.target.value.trim() !== (t.verify || "")) act("PATCH", `/${current}/tasks/${t.id}`, {verify: e.target.value.trim()}); };
+  $("d-verify").onkeydown = e => { if (e.key === "Enter") e.target.blur(); };
+
+  const B = (label, cls, fn, title) => { const id = "b" + Math.random().toString(36).slice(2, 8); setTimeout(() => { const el = $(id); if (el) el.onclick = fn; }); return `<button class="btn ${cls || ""}" id="${id}" ${title ? `title="${esc(title)}"` : ""}>${label}</button>`; };
+  const acts = [];
+  const P = `/${current}/tasks/${t.id}`;
+  if (running) {
+    acts.push(B("■ Zastavit", "danger", () => confirm("Ukončit běžící session agenta?") && act("POST", P + "/stop")));
+    acts.push(`<a class="btn" href="/term/?arg=pane:${esc(String(t.run.pane).replace("%", ""))}" target="term-${esc(current)}" rel="noopener">▸ Sledovat v terminálu</a>`);
+  } else {
+    if (t.status === "review" && t.phase === "triage") acts.push(B("✓ Schválit plán → Fronta", "primary", () => act("POST", P + "/approve")));
+    if (t.status === "review" && t.phase !== "triage") acts.push(B("✓ Hotovo", "primary", () => act("POST", P + "/approve")));
+    if (["backlog", "todo", "need-attention", "review"].includes(t.status) && t.status !== "in-progress")
+      acts.push(B("▶ Implementovat teď", t.status === "todo" ? "good" : "", () => act("POST", P + "/run"),
+                  "Spustí agenta hned, bez ohledu na pořadí ve frontě"));
+    if (["backlog", "todo", "need-attention", "review", "done", "canceled"].includes(t.status))
+      acts.push(B("◔ Triage znovu", "", () => act("POST", P + "/triage"), "Agent znovu projde kód a napíše plán"));
+    if (["backlog", "need-attention", "review"].includes(t.status)) acts.push(B("≡ Do fronty", "", () => act("POST", P + "/move", {status: "todo"})));
+    if (["todo", "need-attention", "review"].includes(t.status)) acts.push(B("▫ Do backlogu", "", () => act("POST", P + "/move", {status: "backlog"})));
+    if (!["done", "canceled"].includes(t.status)) acts.push(B("✕ Zrušit", "danger", () => act("PATCH", P, {status: "canceled"})));
+    if (["done", "canceled"].includes(t.status)) {
+      acts.push(B("↺ Znovu otevřít", "", () => act("POST", P + "/move", {status: "backlog"})));
+      acts.push(B("⌸ Archivovat", "", () => act("POST", P + "/archive", {}, closeDrawer), "Přesune soubor do tasks/archive/"));
+    }
+  }
+  $("d-acts").innerHTML = acts.join("");
+
+  // body: request (editable), then the appended sections in order, then reply boxes, then the log
+  const parts = [];
+  parts.push(`<div class="sec request"><h3>Zadání <button class="edit" id="d-edit">upravit</button></h3>
+    <div class="md" id="d-req">${md(t.request)}</div></div>`);
+  for (const s of t.sections || []) {
+    const kind = s.kind.toLowerCase();
+    parts.push(`<div class="sec ${kind}"><h3>${esc(KIND_CS[s.kind] || s.kind)} <span class="who">${esc(s.head)}</span></h3><div class="md">${md(s.text)}</div></div>`);
+  }
+  const needsAnswer = t.status === "need-attention" || (t.status === "review" && t.phase === "triage" && openQuestions(t) > 0);
+  if (!running && needsAnswer) {
+    parts.push(`<div class="reply"><textarea id="d-answer" placeholder="${t.phase === "triage" ? "Odpovědi na otázky agenta (očíslovaně) – agent plán přepracuje" : "Odpověď agentovi – úkol se vrátí na začátek fronty"}"></textarea>
+      <div class="row"><button class="btn primary" id="d-answer-btn">↩ Odpovědět</button>
+      <span class="note">${t.phase === "triage" ? "Bez odpovědí lze plán rovnou schválit do fronty, agent se pak rozhodne sám." : "Nebo vrať úkol do fronty bez odpovědi tlačítkem Do fronty."}</span></div></div>`);
+  }
+  if (!running && t.status === "review" && t.phase !== "triage") {
+    parts.push(`<div class="reply"><textarea id="d-reject" placeholder="Co má agent změnit – úkol se vrátí na začátek fronty s těmito připomínkami"></textarea>
+      <div class="row"><button class="btn" id="d-reject-btn">↩ Vrátit s připomínkami</button></div></div>`);
+  }
+  parts.push(`<div class="sec log-sec"><h3>Log posledního běhu ${running ? '<span class="spin"></span>' : ""} <button class="edit" id="d-log-btn">${running ? "živě" : "zobrazit"}</button></h3><pre class="log" id="d-log" hidden></pre></div>`);
+  $("d-body").innerHTML = parts.join("");
+  $("d-foot").innerHTML = `<code>tasks/${esc(t.file)}</code> · aktualizováno ${esc(t.updated || "")} · <a class="term" href="/term/?arg=${esc(current)}" target="term-${esc(current)}" rel="noopener">terminál projektu</a>`;
+
+  $("d-edit").onclick = () => {
+    const box = $("d-req");
+    box.innerHTML = `<textarea id="d-req-ta" style="min-height:160px">${esc(t.request)}</textarea>
+      <div class="row" style="margin-top:8px;display:flex;gap:8px"><button class="btn primary" id="d-req-save">Uložit</button><button class="btn" id="d-req-cancel">Zrušit</button></div>`;
+    $("d-req-save").onclick = () => act("PATCH", P, {request: $("d-req-ta").value});
+    $("d-req-cancel").onclick = renderDetail;
+    $("d-req-ta").focus();
+  };
+  const ab = $("d-answer-btn"); if (ab) ab.onclick = () => { const v = $("d-answer").value.trim(); if (v) act("POST", P + "/answer", {text: v}); };
+  const rb = $("d-reject-btn"); if (rb) rb.onclick = () => { const v = $("d-reject").value.trim(); if (v) act("POST", P + "/reject", {text: v}); };
+  $("d-log-btn").onclick = () => { const pre = $("d-log"); pre.hidden = !pre.hidden; if (!pre.hidden) startLog(t.id); else stopLog(); };
+  if (running) { $("d-log").hidden = false; startLog(t.id); }
+}
+let logShown = false;
+async function fetchLog(id){
+  try { const d = await api("GET", `/${current}/tasks/${id}/log`); const pre = $("d-log"); if (pre) { pre.textContent = d.log || "(zatím žádný log)"; pre.scrollTop = pre.scrollHeight; } }
+  catch (e) { const pre = $("d-log"); if (pre) pre.textContent = e.message; }
+}
+function startLog(id){ logShown = true; stopLog(true); fetchLog(id); logTimer = setInterval(() => fetchLog(id), 4000); }
+function stopLog(keep){ if (logTimer) clearInterval(logTimer); logTimer = null; if (!keep) logShown = false; }
+
+/* ---- live updates ---- */
+function setLive(on, txt){ $("live").classList.toggle("on", on); $("live-txt").textContent = txt; }
+function connect(){
+  if (es) es.close();
+  try {
+    es = new EventSource(API + "/events");
+    es.onopen = () => { setLive(true, "živě"); if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } };
+    es.addEventListener("change", e => {
+      let d = {}; try { d = JSON.parse(e.data); } catch (x) {}
+      if (!d.project || d.project === current) loadTasks().catch(err => showErr(err.message));
+      else loadProjects().catch(() => {});
+    });
+    es.onerror = () => { setLive(false, "obnovuji po 15 s"); if (!pollTimer) pollTimer = setInterval(refresh, 15000); };
+  } catch (e) { setLive(false, "bez živých změn"); pollTimer = setInterval(refresh, 15000); }
+}
+
+/* ---- start ---- */
+readHash();
+if (window.innerWidth <= 860) mobileCol = "waiting";
+refresh().then(() => {
+  const p = projects.find(x => x.name === current);
+  if (!p && projects.length) { current = projects[0].name; loadTasks(); }
+  if (openId) { renderDetail(); openDrawer(); }
+  setHash();
+});
+connect();
+window.addEventListener("hashchange", () => { readHash(); loadTasks().then(() => { if (openId) { renderDetail(); openDrawer(); } else closeDrawer(); }).catch(() => {}); });
+</script>
+</body>
+</html>

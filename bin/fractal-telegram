@@ -27,6 +27,9 @@ Commands (project = name from the registry):
                                one message that is edited while it grows
     /use <project>             remember a default project for this chat, after
                                which /ask, /send, /run work without the name
+    /task <project> <text>     new task on the project's board (fractal-tasks);
+                               plain text starting with "task" or "úkol" does the same
+    /tasks [project]           what the board has for you: open questions, work to review
     /help                      built-in text, or $FRACTAL_STATE_DIR/telegram-help.txt
                                if that file exists (write your own, in your language)
     <plain text>               same as /send to the default project - with a
@@ -40,6 +43,8 @@ its own.
 
 Setup:
     fractal-telegram configure <bot token>     writes the token file (0600)
+    fractal-telegram notify <text>             one message to every allowed user
+                                               (fractal-task-run uses it)
     fractal-telegram                           run (the systemd unit does this)
 
 The token lives in its own 0600 file (FRACTAL_TELEGRAM_TOKEN_FILE), not in
@@ -63,6 +68,7 @@ from fractal_config import CFG, REGISTRY, STATE_DIR, URL, WWW, port  # noqa: E40
 
 API = "https://api.telegram.org/bot{token}/{method}"
 CTL = f"http://127.0.0.1:{port('CTL')}"
+TASKS = f"http://127.0.0.1:{port('TASKS')}"
 TOKEN_FILE = CFG["FRACTAL_TELEGRAM_TOKEN_FILE"]
 USERS = {int(u) for u in re.split(r"[\s,]+", CFG["FRACTAL_TELEGRAM_USERS"].strip()) if u.isdigit()}
 WATCH = int(CFG["FRACTAL_TELEGRAM_WATCH"] or 0)
@@ -135,8 +141,16 @@ def edit(chat: int, mid: int, text: str) -> None:
 # --- fractal-ctl --------------------------------------------------------------
 
 def ctl(method: str, path: str, body: dict | None = None, timeout: float = 30) -> tuple[int, dict]:
+    return _api(CTL, "fractal-ctl", method, path, body, timeout)
+
+
+def tasks_api(method: str, path: str, body: dict | None = None, timeout: float = 30) -> tuple[int, dict]:
+    return _api(TASKS, "fractal-tasks", method, path, body, timeout)
+
+
+def _api(base: str, who: str, method: str, path: str, body: dict | None, timeout: float) -> tuple[int, dict]:
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(CTL + path, data=data, method=method,
+    req = urllib.request.Request(base + path, data=data, method=method,
                                  headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -147,7 +161,7 @@ def ctl(method: str, path: str, body: dict | None = None, timeout: float = 30) -
         except Exception:                                     # noqa: BLE001
             return e.code, {"error": str(e)}
     except (urllib.error.URLError, OSError) as e:
-        return 0, {"error": f"fractal-ctl is not reachable ({e.reason if hasattr(e, 'reason') else e})"}
+        return 0, {"error": f"{who} is not reachable ({e.reason if hasattr(e, 'reason') else e})"}
 
 
 def registry() -> list[dict]:
@@ -237,6 +251,8 @@ HELP = """fractal bot
 /send <p> <text> – paste text into the project's agent window (no answer here)
 /ask <p> <question> – headless question to the agent, answer comes back here
 /use <p> – default project for this chat, then omit <p> everywhere
+/task <p> <text> – new task on the board; "task …" or "úkol …" without the slash works too
+/tasks [p] – what the board is waiting on you for
 plain text – same as /send to the default project
 
 Dashboard: {url}"""
@@ -410,6 +426,51 @@ def cmd_ask(chat: int, args: list[str]) -> None:
     edit(chat, mid, f"✗ {name}: no answer within {QUERY_WAIT // 60} min")
 
 
+TASK_WORDS = ("task", "ukol", "úkol")
+WAITING = {"review": "to review", "need-attention": "needs you"}
+
+
+def cmd_task(chat: int, args: list[str]) -> None:
+    p, rest, err = pick_project(chat, args, need_rest=True)
+    if err:
+        return say(chat, err)
+    text = " ".join(rest).strip()
+    if not text:
+        return cmd_tasks(chat, [p["name"]])
+    name = p["name"]
+    code, data = tasks_api("POST", f"/{name}/tasks", {"title": text[:120], "request": text})
+    if code != 201:
+        return say(chat, f"✗ {name}: {data.get('error', code)}")
+    state = "triage started" if data.get("status") == "triage" else data.get("status", "")
+    say(chat, f"☑ {name} · task {data['id']} created ({state})\n{URL}tasks.html#{name}/{data['id']}")
+
+
+def cmd_tasks(chat: int, args: list[str]) -> None:
+    p, _rest, err = pick_project(chat, args, need_rest=False)
+    if err:
+        return say(chat, err)
+    name = p["name"]
+    code, data = tasks_api("GET", f"/{name}/tasks")
+    if code != 200:
+        return say(chat, f"✗ {name}: {data.get('error', code)}")
+    tasks = data.get("tasks") or []
+    lines = []
+    for t in tasks:
+        if t["status"] in WAITING:
+            kind = "plan" if t.get("phase") == "triage" else "work"
+            lines.append(f"⚠ {t['id']} {t['title']} – {kind} {WAITING[t['status']]}")
+    for t in tasks:
+        if t["status"] in ("triage", "in-progress"):
+            lines.append(f"◐ {t['id']} {t['title']} – {t['status']}")
+    queued = [t for t in tasks if t["status"] == "todo"]
+    if queued:
+        lines.append(f"○ queue: " + ", ".join(f"{t['id']} {t['title']}" for t in queued[:6])
+                     + (" …" if len(queued) > 6 else ""))
+    if not lines:
+        lines.append("nothing waiting, nothing running")
+    say(chat, f"{name} board\n" + "\n".join(lines) + f"\n{URL}tasks.html#{name}")
+
+
 COMMANDS = {
     "help": cmd_help,
     "status": cmd_status, "s": cmd_status,
@@ -420,6 +481,8 @@ COMMANDS = {
     "run": cmd_run,
     "send": cmd_send,
     "ask": cmd_ask,
+    "task": cmd_task, "ukol": cmd_task,
+    "tasks": cmd_tasks, "ukoly": cmd_tasks,
 }
 
 MENU = [
@@ -431,6 +494,8 @@ MENU = [
     ("send", "paste text into the agent window"),
     ("ask", "headless question to the agent"),
     ("use", "default project for this chat"),
+    ("task", "new task on the board: /task <p> <text>"),
+    ("tasks", "what the board is waiting on you for"),
     ("help", "command list"),
 ]
 
@@ -453,6 +518,10 @@ def handle(msg: dict) -> None:
             log(f"ignored message from user {user} (not in FRACTAL_TELEGRAM_USERS)")
         return
     if not text.startswith("/"):
+        # dictation has no slashes: "úkol <text>" / "task <text>" is a new task
+        head, _, rest = text.partition(" ")
+        if head.lower().strip(",.:;") in TASK_WORDS and rest.strip():
+            return cmd_task(chat, rest.split())
         # plain text is a /send to the chat's default project; the first word
         # is deliberately NOT parsed as a project name here - a thought that
         # starts with "shop ..." must not land in the shop session
@@ -537,6 +606,17 @@ def main() -> None:
         if len(sys.argv) != 3:
             sys.exit("usage: fractal-telegram configure <bot token>")
         return configure(sys.argv[2])
+    if len(sys.argv) >= 2 and sys.argv[1] == "notify":
+        _token = read_token()
+        text = " ".join(sys.argv[2:]).strip()
+        if not _token or not text or not USERS:
+            sys.exit("notify: needs a token, a text and FRACTAL_TELEGRAM_USERS")
+        for uid in USERS:
+            try:
+                say(uid, text)
+            except Exception as e:                            # noqa: BLE001
+                log(f"notify: could not reach {uid}: {e}")
+        return
     if len(sys.argv) >= 2:
         sys.exit(__doc__)
     _token = read_token()

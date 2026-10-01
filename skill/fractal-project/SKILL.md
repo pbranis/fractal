@@ -78,6 +78,14 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:<port>/
 Reload the dashboard — the card must be there — and open
 `$FRACTAL_URL/term/?arg=<name>`.
 
+### 5. Optional: a task board
+
+Create an empty `tasks/` directory in the project root (and add
+`tasks/logs/` to its `.gitignore`) and the project appears on
+`/tasks.html` - a kanban whose cards are markdown files the agent plans and
+implements. Nothing else to register; see `docs/tasks.md` in the fractal
+repo.
+
 ## Pitfalls
 
 **Dev servers reject foreign Host headers.** Vite, Astro and Next return 403

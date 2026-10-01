@@ -184,6 +184,45 @@ shared by its session tag and the stripe on its project card.
 It is served by `/ctl` rather than as a static JSON in the web root because
 prompts are personal content and `/ctl` is tailnet-only.
 
+## The task board
+
+`fractal-tasks` (`GET/POST /tasks/...`, tailnet only) is the fourth loopback
+service and the only one with a watcher thread. It owns no data: a project
+has a board when its `root` holds `tasks/`, and every task is a markdown
+file there with a small frontmatter (status, order, priority, phase,
+verify) followed by the owner's request and appended, dated sections
+(Plan, Questions, Answers, Feedback, Result, Run). `lib/fractal_tasks.py`
+is the parser both the service and the runner use. The file is the prompt,
+the history and the git record at once, so the board never has to be
+trusted more than a text editor; the format is in
+[docs/tasks.md](docs/tasks.md).
+
+Running a task means `fractal-task-run <project> <id> triage|run` in a tmux
+window `task-<id>` of the project's session - the same session `work` and
+`/term` attach to. The service only creates the window; the runner sets the
+status, drives one headless `claude -p` session (stream-json, printed one
+line per event, logged to `tasks/logs/`), decides the outcome from what the
+agent appended (a Plan, a Questions section, the `NEED_ATTENTION` marker),
+runs `verify`, appends a Run section and commits the task file alone. That
+is why a run survives a restart of `fractal-tasks` and can be started by
+hand without the board.
+
+The watcher polls file mtimes and the tmux window list every two seconds
+and pushes `{"project"}` events over server-sent events (`/tasks/events`;
+nginx has buffering off for the prefix). It also parks a "running" task
+whose window vanished for two minutes without an outcome, and with the
+per-project *auto* switch (in `$FRACTAL_STATE_DIR/tasks-state.json`) starts
+the first queued task when nothing is being implemented - one
+implementation at a time per project because the runs share a working
+tree, while a triage (read-only) may run beside it.
+
+The page `www/tasks.html` is one file like the dashboard: the kanban is a
+render of the task list, drag and drop posts the target column plus the
+column's order, and every change is followed by a reload rather than local
+bookkeeping. The Telegram bot gained `/task` and `/tasks`, a bare `task …`
+/ `úkol …` message for dictation, and a `notify` subcommand the runner
+calls when a run ends.
+
 ## Dashboard internals
 
 `www/index.html` is one file: CSS, markup, JS. It fetches `projects.json`,
