@@ -1,6 +1,5 @@
 [Unit]
 Description=fractal: after a reboot start only the projects that were running
-After=default.target
 
 [Service]
 Type=oneshot

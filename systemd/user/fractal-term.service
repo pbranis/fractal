@@ -1,6 +1,5 @@
 [Unit]
 Description=fractal: ttyd browser terminal at /term/ (project comes from ?arg=)
-After=default.target
 
 [Service]
 # --url-arg: the client passes the project name in the URL (/term/?arg=x). The

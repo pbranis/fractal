@@ -1,6 +1,5 @@
 [Unit]
 Description=fractal: drop-zone uploads (loopback, exposed via nginx)
-After=default.target
 
 [Service]
 ExecStart=${HOME}/.local/bin/fractal-upload

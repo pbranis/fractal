@@ -1,6 +1,5 @@
 [Unit]
 Description=fractal: task board backend (loopback, exposed via nginx under /tasks/)
-After=default.target
 
 [Service]
 ExecStart=${HOME}/.local/bin/fractal-tasks

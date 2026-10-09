@@ -1,6 +1,5 @@
 [Unit]
 Description=fractal: start/stop projects from the dashboard (loopback, exposed via nginx)
-After=default.target
 
 [Service]
 ExecStart=${HOME}/.local/bin/fractal-ctl
