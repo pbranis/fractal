@@ -1,0 +1,7 @@
+[Unit]
+Description=fractal: snapshot the agent conversations running in tmux
+
+[Service]
+Type=oneshot
+Environment=PATH=${HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=${HOME}/.local/bin/fractal-resume save

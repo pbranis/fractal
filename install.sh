@@ -102,12 +102,13 @@ for f in "$REPO"/systemd/user/*; do
     render "$f" "$UNIT_DIR/$(basename "$f")"
 done
 systemctl --user daemon-reload
-CORE="fractal-ctl.service fractal-files.service fractal-upload.service fractal-tasks.service fractal-autostart.service fractal-status.timer"
+CORE="fractal-ctl.service fractal-files.service fractal-upload.service fractal-tasks.service fractal-autostart.service fractal-resume.service fractal-resume-save.timer fractal-status.timer"
 command -v ttyd >/dev/null && CORE="$CORE fractal-term.service"
 for u in $CORE; do
     systemctl --user enable "$u" >/dev/null 2>&1 || true
-    # autostart is a oneshot that starts project units - only ever "start" it (no-op when active)
-    if [ "$u" = fractal-autostart.service ]; then systemctl --user start "$u"; else systemctl --user restart "$u"; fi
+    # autostart and resume are oneshots that start things - only ever "start"
+    # them (no-op when active; resume also remembers it already ran this boot)
+    if [ "$u" = fractal-autostart.service ] || [ "$u" = fractal-resume.service ]; then systemctl --user start "$u"; else systemctl --user restart "$u"; fi
     note "$u: $(systemctl --user is-active "$u")"
 done
 # optional meters: only when the CLI exists, otherwise the timer would just log errors

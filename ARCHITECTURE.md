@@ -18,6 +18,7 @@ read, on every request, by:
 | `bin/fractal-ctl` | `service.start/stop/probe`, `hooks`, `sendPrefix` |
 | `bin/fractal-telegram` | validates project names; everything else goes through `fractal-ctl` |
 | `bin/fractal-autostart` | `service` to know which units to start at boot |
+| `bin/fractal-resume` | `claudeArgs` and the project names, to put resumed agent conversations back where they ran |
 
 The file is owned by the user, so a new project is a plain file write — no
 HTML edits, no nginx change, no root. `project-register` is a convenience
@@ -107,6 +108,9 @@ systemd --user
  ├─ fractal-claude-usage.timer every 5 min (optional)
  ├─ fractal-codex-usage.timer  every 5 min (optional)
  ├─ fractal-autostart.service  oneshot at login: starts project units per autostart.json
+ ├─ fractal-resume.service     oneshot after autostart: resumes the agent conversations
+ │                             from resume.json (claude --resume, same tmux session/window)
+ ├─ fractal-resume-save.timer  every minute → resume.json (live sessions from ~/.claude/sessions)
  └─ <project>.service ...      oneshot+RemainAfterExit, ExecStart = "<ctl> start"
                                NOT wanted by default.target — autostart decides
 tmux server (one, shared)

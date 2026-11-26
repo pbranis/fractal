@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""Bring the agent conversations back after a reboot, each in its own terminal.
+
+fractal-autostart brings back the project *services*; the Claude Code
+conversations that were open in tmux (the "claude" window of a project, the
+extra terminals <project>-p<n>, anything else running in tmux) would be gone.
+This keeps a snapshot of them and resumes them after boot:
+
+    fractal-resume save       snapshot the running conversations (timer, every minute)
+    fractal-resume restore    resume the snapshot (once per boot, at login)
+    fractal-resume show       print the snapshot and what runs now
+
+The snapshot comes from the same place the dashboard reads:
+``~/.claude/sessions/<pid>.json`` - every interactive Claude Code process keeps
+its conversation id, cwd and tmux pane there. Only live processes count, so a
+conversation that was ended on purpose (/exit, closed terminal) does not come
+back.
+
+restore puts every conversation back under the same tmux name - session
+"shop" window "claude", session "shop-p2" - with ``claude --resume <id>``
+in the directory it ran in, and the tab name from the browser terminal.
+What still runs is left alone, so a second restore does nothing.
+
+Guarding the snapshot: after a boot the timer would otherwise overwrite it
+with "nothing runs" before restore had a chance to read it. ``save`` therefore
+only writes once ``restore`` has run in this boot (a marker in the runtime
+directory, which is a tmpfs), and never while the system is shutting down.
+The previous snapshot is kept as ``resume.json.prev``.
+"""
+import glob
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+from fractal_config import CFG, HOME, STATE_DIR  # noqa: E402
+from fractal_sessions import SESSIONS_DIR, TITLE_OPT, _alive, _project_of, _projects  # noqa: E402
+
+STATE = os.path.join(STATE_DIR, "resume.json")
+RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+MARKER = os.path.join(RUNTIME, "fractal-resume.restored")
+AGENT = CFG["FRACTAL_AGENT"]
+FLAGS = CFG["FRACTAL_AGENT_FLAGS"]
+AGENT_WINDOW = CFG["FRACTAL_AGENT_WINDOW"]
+# how long restore waits for fractal-autostart to create a project's own
+# session before it creates it itself (the ctl scripts add their windows to
+# an existing session, but would then come second in the window list)
+SESSION_WAIT = 60
+
+
+def tmux(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["tmux", *args], capture_output=True, text=True)
+
+
+def has_session(name: str) -> bool:
+    return tmux("has-session", "-t", "=" + name).returncode == 0
+
+
+def window_names(sess: str) -> list[str]:
+    r = tmux("list-windows", "-t", "=" + sess, "-F", "#W")
+    return r.stdout.split() if r.returncode == 0 else []
+
+
+def pane_info() -> dict:
+    """pane id -> (window name, tab name of the window, tab name of the session)."""
+    fmt = "\t".join(["#{pane_id}", "#W", "#{" + TITLE_OPT + "}"])
+    r = tmux("list-panes", "-a", "-F", fmt)
+    out = {}
+    for line in r.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3:
+            out[parts[0].lstrip("%")] = (parts[1], parts[2])
+    return out
+
+
+def session_title(sess: str) -> str:
+    r = tmux("show-options", "-v", "-q", "-t", f"={sess}:", TITLE_OPT)
+    return r.stdout.rstrip("\n") if r.returncode == 0 else ""
+
+
+def window_title(win_id: str) -> str:
+    r = tmux("show-options", "-v", "-q", "-w", "-t", win_id, TITLE_OPT)
+    return r.stdout.rstrip("\n") if r.returncode == 0 else ""
+
+
+# --- snapshot -----------------------------------------------------------------
+
+def running() -> list[dict]:
+    """Interactive agent conversations that run inside tmux right now."""
+    projects = _projects()
+    claude_args = {p.get("name"): p.get("claudeArgs") or "" for p in projects}
+    panes = pane_info()
+    out, seen = [], set()
+    for fn in glob.glob(os.path.join(SESSIONS_DIR, "*.json")):
+        try:
+            with open(fn, encoding="utf-8") as f:
+                s = json.load(f)
+            pid = int(s["pid"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if s.get("kind", "interactive") != "interactive" or not _alive(pid, s.get("procStart")):
+            continue
+        sid, cwd = s.get("sessionId") or "", s.get("cwd") or ""
+        m = re.match(r"^(.*):@(\d+)\.%(\d+)$", s.get("tmux") or "")
+        if not sid or not cwd or not m or sid in seen:
+            continue                       # outside tmux there is nothing to put it back into
+        tsess, win_id, pane = m.group(1), "@" + m.group(2), m.group(3)
+        if pane not in panes:
+            continue                       # pane already gone (a stale file)
+        seen.add(sid)
+        project = _project_of(tsess, cwd, projects)
+        out.append({
+            "tmux": tsess,
+            "window": panes[pane][0],
+            "cwd": cwd,
+            "sessionId": sid,
+            "project": project,
+            "claudeArgs": claude_args.get(project, "") if project else "",
+            "title": window_title(win_id),
+            "sessionTitle": session_title(tsess),
+            "started": (s.get("startedAt") or 0) / 1000,
+        })
+    out.sort(key=lambda x: (x["tmux"], x["window"], x["started"]))
+    return out
+
+
+def read_state() -> dict:
+    try:
+        with open(STATE, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data.get("sessions"), list) else {"sessions": []}
+    except (OSError, ValueError, AttributeError):
+        return {"sessions": []}
+
+
+def write_state(sessions: list) -> None:
+    os.makedirs(STATE_DIR, exist_ok=True)
+    payload = {
+        "_comment": "Agent conversations running in tmux, snapshot by fractal-resume save "
+                    "(every minute); fractal-resume restore resumes them after a reboot.",
+        "saved": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "sessions": sessions,
+    }
+    tmp = STATE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, STATE)
+
+
+def shutting_down() -> bool:
+    r = subprocess.run(["systemctl", "is-system-running"], capture_output=True, text=True)
+    return r.stdout.strip() == "stopping"
+
+
+def cmd_save(force: bool) -> int:
+    if not force and not os.path.exists(MARKER):
+        print("not restored in this boot yet - keeping the snapshot (use --force to overwrite)")
+        return 0
+    if shutting_down():
+        print("system is shutting down - keeping the snapshot")
+        return 0
+    now = running()
+    old = read_state()
+    if now != old["sessions"]:
+        if old["sessions"] and os.path.exists(STATE):
+            os.replace(STATE, STATE + ".prev")
+        write_state(now)
+    print(f"{len(now)} conversation(s) in the snapshot")
+    return 0
+
+
+# --- restore ------------------------------------------------------------------
+
+def resume_cmd(sid: str, extra: str) -> str:
+    """Resume that conversation; when it ends (or cannot be resumed) the
+    window falls back to a shell instead of vanishing - same as `work`."""
+    extra = f" {extra}" if extra else ""
+    if AGENT != "claude":
+        return f"{AGENT} {FLAGS}{extra}; exec bash"
+    return f"claude --resume {shlex.quote(sid)} {FLAGS}{extra}; exec bash"
+
+
+def wait_for_session(name: str, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if has_session(name):
+            return True
+        time.sleep(2)
+    return has_session(name)
+
+
+def autostart_on(project: str) -> bool:
+    """Will fractal-autostart create this project's session (it has a service
+    and was switched on)?"""
+    try:
+        with open(os.path.join(STATE_DIR, "autostart.json"), encoding="utf-8") as f:
+            state = json.load(f).get("projects", {})
+    except (OSError, ValueError, AttributeError):
+        state = {}
+    for p in _projects():
+        if p.get("name") == project:
+            svc = p.get("service") or {}
+            return bool(svc.get("start")) and state.get(project, True)
+    return False
+
+
+def live_ids() -> set:
+    return {x["sessionId"] for x in running()}
+
+
+def restore_one(e: dict) -> str:
+    sess, win, cwd = e["tmux"], e.get("window") or AGENT_WINDOW, e["cwd"]
+    if not os.path.isdir(cwd):
+        return f"skipped, directory is gone: {cwd}"
+    cmd = resume_cmd(e["sessionId"], e.get("claudeArgs") or "")
+    # a project's own session is normally created by its ctl script at boot;
+    # give it a moment so the services keep their usual place
+    if sess == e.get("project") and not has_session(sess) and autostart_on(sess):
+        wait_for_session(sess, SESSION_WAIT)
+    if not has_session(sess):
+        r = tmux("new-session", "-d", "-s", sess, "-n", win, "-c", cwd, cmd)
+        if r.returncode != 0:
+            return "failed: " + r.stderr.strip()
+        # a project session gets its spare shell, as `work` makes it
+        if sess == e.get("project"):
+            tmux("new-window", "-d", "-t", f"={sess}:", "-n", "shell", "-c", cwd)
+    else:
+        r = tmux("new-window", "-d", "-t", f"={sess}:", "-n", win, "-c", cwd, cmd)
+        if r.returncode != 0:
+            return "failed: " + r.stderr.strip()
+        if win == AGENT_WINDOW and sess == e.get("project"):
+            # agent window first, like `work` arranges it
+            tmux("move-window", "-b", "-s", f"={sess}:{win}", "-t", f"={sess}:{{start}}")
+    if e.get("sessionTitle") and not session_title(sess):
+        tmux("set-option", "-t", f"={sess}:", TITLE_OPT, e["sessionTitle"])
+    if e.get("title"):
+        r = tmux("display", "-p", "-t", f"={sess}:{win}", "#{window_id}")
+        if r.returncode == 0 and r.stdout.strip():
+            tmux("set-option", "-w", "-t", r.stdout.strip(), TITLE_OPT, e["title"])
+    return f"resumed in {sess}:{win}"
+
+
+def cmd_restore(force: bool) -> int:
+    if os.path.exists(MARKER) and not force:
+        print("already restored in this boot (use --force to run again)")
+        return 0
+    try:
+        entries = read_state()["sessions"]
+        live = live_ids()
+        for e in entries:
+            if not isinstance(e, dict) or not e.get("sessionId") or not e.get("tmux") or not e.get("cwd"):
+                continue
+            label = f"{e['tmux']}:{e.get('window', '')} {e['sessionId'][:8]}"
+            if e["sessionId"] in live:
+                print(f"{label}: already running")
+                continue
+            print(f"{label}: {restore_one(e)}", flush=True)
+    finally:
+        os.makedirs(RUNTIME, exist_ok=True)
+        with open(MARKER, "w", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%dT%H:%M:%S%z\n"))
+    return 0
+
+
+def cmd_show() -> int:
+    data = read_state()
+    live = live_ids()
+    print(f"snapshot {STATE} ({data.get('saved', 'never')})")
+    for e in data["sessions"]:
+        state = "running" if e.get("sessionId") in live else "NOT running"
+        title = f"  \"{e['title']}\"" if e.get("title") else ""
+        where = f"{e.get('tmux', '?')}:{e.get('window', '?')}"
+        print(f"  {where:<22} {e.get('sessionId', '')[:8]}  "
+              f"{state:<12} {e.get('cwd', '').replace(HOME, '~', 1)}{title}")
+    print(f"restored in this boot: {'yes' if os.path.exists(MARKER) else 'no'}")
+    return 0
+
+
+def main(argv: list) -> int:
+    cmd = argv[1] if len(argv) > 1 else "show"
+    force = "--force" in argv[2:]
+    if cmd == "save":
+        return cmd_save(force)
+    if cmd == "restore":
+        return cmd_restore(force)
+    if cmd == "show":
+        return cmd_show()
+    print("usage: fractal-resume [save|restore|show] [--force]", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

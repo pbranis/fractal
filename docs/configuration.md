@@ -12,7 +12,7 @@ has a default; an absent file is not an error.
 | `FRACTAL_URL` | `http://<hostname>/` | hints printed by `project-register`, the 403 page |
 | `FRACTAL_ALLOW` | `100.64.0.0/10 fd7a:115c:a1e0::/48` | nginx `fractal-tailnet-only.conf` (rendered) |
 | `FRACTAL_UPLOADS` | `~/uploads` | `fractal-upload` |
-| `FRACTAL_STATE_DIR` | `~/.config/fractal` | `autostart.json`, install backups |
+| `FRACTAL_STATE_DIR` | `~/.config/fractal` | `autostart.json`, `resume.json`, install backups |
 | `FRACTAL_CTL_PORT` | `7691` | `fractal-ctl`, nginx, unit |
 | `FRACTAL_FILES_PORT` | `7692` | `fractal-files`, nginx, unit |
 | `FRACTAL_UPLOAD_PORT` | `7690` | `fractal-upload`, nginx, unit |
@@ -40,6 +40,7 @@ touched).
 | registry | `$FRACTAL_WWW/projects.json` |
 | generated data | `$FRACTAL_WWW/status.json`, `claude-usage.json`, `codex-usage.json` |
 | autostart memory | `$FRACTAL_STATE_DIR/autostart.json` |
+| open agent conversations | `$FRACTAL_STATE_DIR/resume.json` (+ `.prev`), snapshot every minute; `fractal-resume restore` resumes them after a reboot |
 | task board settings | `$FRACTAL_STATE_DIR/tasks-state.json` (auto queue / auto triage per project); the tasks themselves are `<root>/tasks/*.md` in each project |
 | telegram | `$FRACTAL_TELEGRAM_TOKEN_FILE` (0600), `$FRACTAL_STATE_DIR/telegram-defaults.json`, `telegram-chats.json`, optional `telegram-help.txt` |
 | user units | `~/.config/systemd/user/fractal-*.service|timer`, `<project>.service` |

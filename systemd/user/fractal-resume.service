@@ -1,0 +1,17 @@
+[Unit]
+Description=fractal: after a reboot resume the agent conversations that were open in tmux
+# after autostart, so the projects' own sessions (services) come first
+After=fractal-autostart.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# the tmux server daemonizes into the cgroup of whichever unit created it
+# first - do not take it down when this unit is stopped
+KillMode=process
+Environment=PATH=${HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=${HOME}/.local/bin/fractal-resume restore
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

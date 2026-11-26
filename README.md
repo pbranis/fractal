@@ -143,7 +143,7 @@ the ones you will touch:
 ## Layout
 
 ```
-bin/        fractal-ctl, fractal-files, fractal-upload, fractal-status, fractal-autostart,
+bin/        fractal-ctl, fractal-files, fractal-upload, fractal-status, fractal-autostart, fractal-resume,
             fractal-telegram, project-register, work, term, fractal-claude-usage, fractal-codex-usage
 lib/        shared config loader (bash + python)
 www/        index.html (dashboard), docs.html (cheat sheet), termkeys.js (iOS key bar)
