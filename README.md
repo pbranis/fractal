@@ -42,7 +42,8 @@ to add a project.
   its state (working / waiting, for how long), title, last prompt and answer,
   a button into its exact tmux pane and an on-demand one-line summary.
 - **Autostart with memory.** After a reboot only the projects that were
-  running come back.
+  running come back, and so do the agent conversations that were open in
+  tmux (`claude --resume`, same session, same tab name).
 - **Machine card:** load, temperature, memory, disk, Wi-Fi, docker containers,
   optionally your Claude / Codex usage limits.
 - **Files:** browse your home directory, download, drag-and-drop upload.
@@ -82,11 +83,14 @@ nginx tmux jq python3 gettext-base        # apt
 ttyd                                       # https://github.com/tsl0922/ttyd (release binary is fine)
 ```
 
-Optional: `docker` (container list), `iwconfig` (Wi-Fi tile),
+Optional: `docker` (container list), `iwconfig` (Wi-Fi tile), `usbutils` (network watchdog),
 `claude` / `codex` CLIs (agent window, usage meters), Tailscale (or any VPN —
 the allowed ranges are configurable).
 
 ## Install
+
+Step by step from a bare box, Tailscale and Claude Code included:
+[docs/getting-started.md](docs/getting-started.md). The short version:
 
 ```bash
 git clone https://github.com/<you>/fractal ~/projects/fractal
@@ -108,6 +112,20 @@ the Terminal button lands you in tmux session `demo`.
 `install.sh` is idempotent: run it again after every `git pull`. Scripts are
 symlinked into `~/.local/bin`, dashboard files are copied into the web root,
 systemd units are rendered from templates with your configuration.
+
+## Documentation
+
+| | |
+|---|---|
+| [docs/getting-started.md](docs/getting-started.md) | from a bare Linux box to the first project, phone included |
+| [docs/daily-use.md](docs/daily-use.md) | dashboard, terminals, extra agent terminals, `work`, what happens after a reboot |
+| [docs/adding-a-project.md](docs/adding-a-project.md) | control script, registration, pinned projects, proxies |
+| [docs/registry.md](docs/registry.md) | `projects.json` field by field |
+| [docs/configuration.md](docs/configuration.md) | `fractal.env`, where state lives, the agent command, the Telegram bot |
+| [docs/tasks.md](docs/tasks.md) | the task board |
+| [docs/operations.md](docs/operations.md) | updates, logs, backups, reboots, the Wi-Fi watchdog, troubleshooting |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | how it fits together |
+| [SECURITY.md](SECURITY.md) | the threat model - read before installing |
 
 ## Adding a project
 
@@ -144,15 +162,16 @@ the ones you will touch:
 
 ```
 bin/        fractal-ctl, fractal-files, fractal-upload, fractal-status, fractal-autostart, fractal-resume,
-            fractal-telegram, project-register, work, term, fractal-claude-usage, fractal-codex-usage
+            fractal-telegram, fractal-tasks, fractal-task, fractal-task-run, fractal-task-deploy,
+            project-register, work, term, fractal-claude-usage, fractal-codex-usage
 lib/        shared config loader (bash + python)
 www/        index.html (dashboard), docs.html (cheat sheet), termkeys.js (iOS key bar)
 nginx/      site template + snippets (core locations, tailnet-only, ttyd proxy)
 systemd/    user unit templates
 skill/      Claude Code skill: wiring a project in
 examples/   fractal.env, projects.json, control-script template, demo project
-extras/     agent CLI wrappers, tmux.conf
-docs/       adding a project, configuration, registry schema
+extras/     agent CLI wrappers, tmux.conf, net-watchdog (Wi-Fi boxes)
+docs/       getting started, daily use, operations, adding a project, configuration, registry, tasks
 ```
 
 ## Status and caveats

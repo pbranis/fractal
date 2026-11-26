@@ -1,0 +1,17 @@
+# /etc/default/net-watchdog - configuration of extras/net-watchdog.
+# Everything is optional; with nothing set the interface and the address to
+# ping are taken from the default route, and the escalation is
+# ifdown/ifup -> restart wpa_supplicant + networking -> reboot.
+
+# IFACE=wlan0
+# GW=192.0.2.1
+
+# Driver reset instead of a reboot (USB Wi-Fi adapters whose firmware hangs).
+# DRIVER is the kernel module (lsmod), USB_ID the vendor:product (lsusb),
+# FW_HANG_PATTERN what the kernel logs when the firmware stops answering.
+# Example: TP-Link Archer T3U on the in-kernel rtw88 driver
+# DRIVER=rtw88_8822bu
+# USB_ID=2357:0138
+# FW_HANG_PATTERN='rtw_8822bu.*failed to (get tx report|send h2c)'
+
+# MIN_UPTIME=600

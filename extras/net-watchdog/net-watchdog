@@ -1,0 +1,139 @@
+#!/bin/bash
+# net-watchdog - bring a headless box back onto the network, escalating step by step.
+#
+# A dev box that hangs off a single (often USB) Wi-Fi adapter is unreachable
+# when that adapter drops - over the LAN and over Tailscale alike, so nobody
+# can log in to fix it. A systemd timer runs this every 2 minutes as root:
+#
+#   failure 3  (~6 min)   ifdown/ifup the interface - or straight to the
+#                         driver reset below when the kernel log shows the
+#                         adapter's firmware hung
+#   failure 6  (~12 min)  driver reset: unload the driver, reset the USB device,
+#                         load the driver, restart wpa_supplicant + networking
+#   failure 10 (~20 min)  reboot (only with uptime > MIN_UPTIME, so no loop)
+#
+# It deliberately does nothing on the first failures: short outages are
+# common and hammering the network for them does more harm than good. While
+# the LAN is fine it also restarts tailscaled when it is not "Running".
+# Nothing is logged while all is well - every line in the log is an event.
+#
+# Configuration: /etc/default/net-watchdog (see net-watchdog.default).
+# fractal-status shows the failure counter and the last log line on the
+# Machine card.
+set -u
+
+IFACE=""                  # wireless/ethernet interface; empty = the one with the default route
+GW=""                     # address to ping; empty = the default gateway
+DRIVER=""                 # kernel module of the adapter, e.g. rtw88_8822bu; empty = no driver reset
+USB_ID=""                 # vendor:product from lsusb, e.g. 2357:0138; empty = no USB reset
+FW_HANG_PATTERN=""        # kernel log regex meaning "firmware hung", e.g. 'failed to get tx report'
+MIN_UPTIME=600            # s; below this it never reboots
+STATE=/run/net-watchdog.fails     # /run is a tmpfs -> the counter starts at 0 after a boot
+LOG=/var/log/net-watchdog.log
+[ -f /etc/default/net-watchdog ] && . /etc/default/net-watchdog
+
+log() { printf '%s %s\n' "$(date -Is)" "$*" >> "$LOG"; }
+
+[ -n "$IFACE" ] || IFACE=$(ip route show default 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="dev"){print $(i+1); exit}}')
+[ -n "$GW" ] || GW=$(ip route show default 2>/dev/null | awk '{print $3; exit}')
+if [ -z "$IFACE" ] || [ -z "$GW" ]; then
+    # no default route at all is itself an outage, but we need to know what to
+    # reset - set IFACE and GW in /etc/default/net-watchdog
+    log "no IFACE/GW configured and no default route to guess them from"
+    exit 0
+fi
+
+lan_ok() { ping -c 2 -W 3 -I "$IFACE" "$GW" >/dev/null 2>&1; }
+
+ts_state() { tailscale status --json 2>/dev/null | jq -r '.BackendState // "unknown"'; }
+
+fw_hung() {
+    [ -n "$FW_HANG_PATTERN" ] || return 1
+    journalctl -k -S -10min --no-pager -q 2>/dev/null | grep -qE "$FW_HANG_PATTERN"
+}
+
+can_reset_driver() { [ -n "$DRIVER" ]; }
+
+# Reloading the driver after a USB reset uploads the adapter's firmware again -
+# what a reboot does, minus the reboot.
+driver_reset() {
+    ifdown "$IFACE" 2>&1 | sed 's/^/  /' >> "$LOG"
+    modprobe -r "$DRIVER" 2>&1 | sed 's/^/  /' >> "$LOG"
+    sleep 2
+    if [ -n "$USB_ID" ] && command -v usbreset >/dev/null; then
+        usbreset "$USB_ID" 2>&1 | sed 's/^/  /' >> "$LOG"
+        sleep 3
+    fi
+    modprobe "$DRIVER" 2>&1 | sed 's/^/  /' >> "$LOG"
+    # the interface shows up a moment after the probe
+    for _ in $(seq 1 15); do [ -e "/sys/class/net/$IFACE" ] && break; sleep 1; done
+    systemctl restart wpa_supplicant 2>/dev/null
+    sleep 2
+    systemctl restart networking
+}
+
+fails=$(cat "$STATE" 2>/dev/null || echo 0)
+[[ "$fails" =~ ^[0-9]+$ ]] || fails=0
+
+if lan_ok; then
+    [ "$fails" -gt 0 ] && log "LAN OK after $fails failures"
+    echo 0 > "$STATE"
+
+    # The LAN can be fine while tailscaled is stuck - reachable from home,
+    # not from anywhere else. Restarting the daemon is cheap and safe.
+    if command -v tailscale >/dev/null; then
+        st=$(ts_state)
+        if [ "$st" != "Running" ]; then
+            log "tailscale BackendState=$st -> restarting tailscaled"
+            systemctl restart tailscaled
+        fi
+    fi
+    exit 0
+fi
+
+fails=$((fails + 1))
+echo "$fails" > "$STATE"
+log "LAN unreachable (gw $GW via $IFACE), failure #$fails"
+
+case "$fails" in
+    3)
+        if can_reset_driver && fw_hung; then
+            log "escalation: $DRIVER firmware hung -> driver/USB reset"
+            driver_reset
+        else
+            log "escalation: ifdown/ifup $IFACE"
+            ifdown "$IFACE" 2>&1 | sed 's/^/  /' >> "$LOG"
+            sleep 3
+            ifup "$IFACE" 2>&1 | sed 's/^/  /' >> "$LOG"
+        fi
+        ;;
+    6)
+        if can_reset_driver; then
+            log "escalation: driver/USB reset + wpa_supplicant + networking"
+            driver_reset
+        else
+            log "escalation: restart wpa_supplicant + networking"
+            systemctl restart wpa_supplicant 2>/dev/null
+            sleep 3
+            systemctl restart networking
+        fi
+        ;;
+    10)
+        up=$(cut -d. -f1 /proc/uptime)
+        if [ "$up" -gt "$MIN_UPTIME" ]; then
+            log "escalation: reboot (uptime ${up}s)"
+            echo 0 > "$STATE"
+            systemctl reboot
+        else
+            log "reboot skipped, uptime ${up}s < ${MIN_UPTIME}s"
+        fi
+        ;;
+    1[1-9]|[2-9][0-9]*)
+        # rebooted or skipped and still nothing - start the cycle again
+        # instead of waiting silently forever
+        log "counter reset after $fails failures"
+        echo 0 > "$STATE"
+        ;;
+esac
+
+exit 0

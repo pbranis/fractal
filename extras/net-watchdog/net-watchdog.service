@@ -1,0 +1,8 @@
+[Unit]
+Description=Network watchdog: check connectivity, escalate step by step
+After=network.target tailscaled.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/net-watchdog
+TimeoutStartSec=120
