@@ -1,5 +1,6 @@
 #!/bin/bash
 # term - what ttyd runs behind /term/. The project comes from the URL: /term/?arg=myproject
+# (or /term/?arg=myproject:p2 for an extra terminal, see below)
 #
 # The name is ALWAYS checked against the registry. Without that, the url-arg
 # would let anyone run an arbitrary command through the URL - and there is a
@@ -48,6 +49,18 @@ if [[ "$name" == pane:* ]]; then
     exec bash -l
 fi
 
+# "<project>:p<n>" / "<project>:s<n>": an extra terminal of the project (a new
+# agent conversation, or a shell) - its own tmux session "<project>-p<n>".
+# The dashboard creates it first (POST /ctl/<project>/term/p, which picks the
+# number); this only attaches. A closed one is not brought back: an old
+# browser tab reconnecting, or a link to p3 after p3 was closed, would
+# otherwise start a new conversation under the old address and tab name.
+# Only that exact shape gets through; `work` checks it again.
+win=""
+if [[ "$name" =~ ^([^:]+):([ps][1-9][0-9]?)$ ]]; then
+    name="${BASH_REMATCH[1]}"; win="${BASH_REMATCH[2]}"
+fi
+
 if ! jq -e --arg n "$name" '.projects[] | select(.name==$n)' "$REG" >/dev/null 2>&1; then
     echo "Unknown project: '$name'"; echo
     list; echo
@@ -55,4 +68,14 @@ if ! jq -e --arg n "$name" '.projects[] | select(.name==$n)' "$REG" >/dev/null 2
     exec bash -l
 fi
 
+if [ -n "$win" ]; then
+    if ! tmux has-session -t "=$name-$win" 2>/dev/null; then
+        echo "Terminal $name-$win is not running (closed, or never created)."
+        echo "Open a new one with ＋ on the dashboard - reload the dashboard first if it"
+        echo "has been open for a while (an old page opens this address directly)."; echo
+        echo "Continuing with a plain shell."; echo
+        exec bash -l
+    fi
+    exec work "$name" "$win"
+fi
 exec work "$name"

@@ -15,7 +15,12 @@ What it adds on top of the files:
   - a watcher: file changes become server-sent events, a run whose window
     vanished without writing an outcome is parked in need-attention, and
     with "auto" on the first queued task starts when nothing is running;
-  - auto triage: a new task gets a triage session right away (default on).
+  - auto triage: a new task gets a triage session right away (default on);
+  - the task's own interactive Claude session, <project>-p<n> like the extra
+    terminals of the dashboard and named after the task, so the task can be
+    discussed and implemented from a terminal as well as from the board -
+    the file stays the shared record, `fractal-task` is the terminal's way
+    to change it.
 
 Endpoints (nginx strips the /tasks/ prefix):
     GET   /projects                       projects with a tasks/ dir, counts, settings
@@ -30,28 +35,41 @@ Endpoints (nginx strips the /tasks/ prefix):
     POST  /<p>/tasks/<id>/reject {text}   review of work: append Feedback -> todo
     POST  /<p>/tasks/<id>/run             start the implementation now
     POST  /<p>/tasks/<id>/triage          start (another) triage now
+    POST  /<p>/tasks/<id>/verify          run only the verify command again (no agent)
     POST  /<p>/tasks/<id>/stop            kill the runner window
+    POST  /<p>/tasks/<id>/deploy {with?}  deploy the task's commits alone (done tasks;
+                                          "with": other done tasks to ship along)
     POST  /<p>/tasks/<id>/archive         move a done/canceled task to tasks/archive/
+                                          (and close its session)
+    POST  /<p>/tasks/<id>/session         make sure the task's Claude session runs -> {session, win}
+    POST  /<p>/tasks/<id>/note {kind, text, who?}   append Plan/Questions/Answers/Feedback/Result
+    POST  /<p>/tasks/<id>/claim           implementing from the task's session: -> in-progress
+    POST  /<p>/tasks/<id>/finish          ...done there: -> review
+    POST  /<p>/tasks/<id>/release         ...given up there: -> backlog
     GET   /<p>/tasks/<id>/log             tail of the latest run log
-    POST  /<p>/settings {auto?, auto_triage?}
+    POST  /<p>/settings {auto?, auto_triage?, deploy_check?, deploy_prepare?, deploy_run?}
+    POST  /<p>/deploy-check               ask the production for its commit now
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import queue
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
 import fractal_tasks as T  # noqa: E402
-from fractal_config import HOME, port  # noqa: E402
+from fractal_config import CFG, HOME, URL, port  # noqa: E402
 
 PORT = port("TASKS")
 BIN = os.path.join(HOME, ".local", "bin")
@@ -60,6 +78,10 @@ ORPHAN_AFTER = 120         # a "running" task without a window for this long is 
 MAX_BODY = 200_000
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,40}$")
 LOG_TAIL = 400
+NOTE_KINDS = ("Plan", "Questions", "Answers", "Feedback", "Result")
+TITLE_OPT = "@fractal_title"          # the tab name the dashboard and the terminal show
+TITLE_LEN = 60
+DEPLOY_POLL = 300          # seconds between asking the production which commit it runs
 
 _subs: list[queue.Queue] = []
 _lock = threading.Lock()
@@ -78,7 +100,7 @@ def tmux(*args: str) -> subprocess.CompletedProcess:
 
 def windows(project: str) -> dict[str, str]:
     """window name -> first pane id, for the project's tmux session."""
-    r = tmux("list-windows", "-t", project + ":", "-F", "#{window_name} #{pane_id}")
+    r = tmux("list-windows", "-t", "=" + project + ":", "-F", "#{window_name} #{pane_id}")
     out = {}
     if r.returncode == 0:
         for line in r.stdout.splitlines():
@@ -104,13 +126,15 @@ def launch(proj: dict, task: dict, mode: str) -> tuple[bool, str]:
     if win in windows(name):
         if task["status"] in T.RUNNING:
             return False, "already running"
-        tmux("kill-window", "-t", f"{name}:{win}")      # leftover of a finished run
+        tmux("kill-window", "-t", f"={name}:{win}")     # leftover of a finished run
     cmd = f"{shlex.quote(os.path.join(BIN, 'fractal-task-run'))} {shlex.quote(name)} {shlex.quote(task['id'])} {mode}"
     task["status"] = "triage" if mode == "triage" else "in-progress"
     task["phase"] = "triage" if mode == "triage" else "dev"
     T.write(task)
-    if tmux("has-session", "-t", name + ":").returncode == 0:
-        r = tmux("new-window", "-d", "-P", "-F", "#{pane_id}", "-t", name + ":", "-n", win, "-c", root, cmd)
+    if T.task_session(name, task["id"]).get("driver"):
+        T.set_task_session(name, task["id"], driver=None)      # the run drives it now, not the terminal
+    if tmux("has-session", "-t", "=" + name).returncode == 0:
+        r = tmux("new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "=" + name + ":", "-n", win, "-c", root, cmd)
     else:
         r = tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", name, "-n", win, "-c", root, cmd)
     if r.returncode != 0:
@@ -123,18 +147,254 @@ def launch(proj: dict, task: dict, mode: str) -> tuple[bool, str]:
     return True, r.stdout.strip()
 
 
+def deploys(project: str) -> dict[str, str]:
+    """task id -> pane id of the deploy window shipping it. A finished deploy
+    renames its window "deployed-..." and lingers a while, not counted."""
+    out = {}
+    for n, p in windows(project).items():
+        if n.startswith("deploy-"):
+            out.update({i: p for i in n[7:].split("+")})
+    return out
+
+
+def launch_deploy(proj: dict, ids: list[str]) -> tuple[bool, str]:
+    name, root = proj["name"], proj["root"]
+    for n in windows(name):
+        if n.startswith("deployed-"):
+            tmux("kill-window", "-t", f"={name}:{n}")    # a finished one lingering
+    cmd = shlex.join([os.path.join(BIN, "fractal-task-deploy"), name, *ids])
+    win = "deploy-" + "+".join(ids)
+    if tmux("has-session", "-t", "=" + name).returncode == 0:
+        r = tmux("new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "=" + name + ":", "-n", win, "-c", root, cmd)
+    else:
+        r = tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", name, "-n", win, "-c", root, cmd)
+    if r.returncode != 0:
+        return False, r.stderr.strip() or "tmux failed"
+    log(f"{name}: deploy of {', '.join(ids)} started in {win} ({r.stdout.strip()})")
+    return True, r.stdout.strip()
+
+
 def stop(proj: dict, task: dict) -> bool:
     name = proj["name"]
     win = f"task-{task['id']}"
     if win not in windows(name):
         return False
-    tmux("kill-window", "-t", f"{name}:{win}")
+    tmux("kill-window", "-t", f"={name}:{win}")
     task = T.load(task["path"])
     if task["status"] in T.RUNNING:
         task["status"] = "need-attention"
         T.append(task, "Error", "run stopped from the board", who="board")
         T.write(task)
     return True
+
+
+# --- the task's own Claude session -----------------------------------------------
+# One per task, created with the task: a tmux session <project>-p<n>, the same
+# kind the dashboard's "+ Claude" makes, so it shows up on the project card
+# under the task's name. Claude in it gets the task as an appended system
+# prompt and a fixed session id, which lets a closed session come back with
+# its conversation. Which session belongs to which task is machine state
+# (fractal_tasks.task_session), not part of the committed file.
+
+SESSION_PROMPT = """This interactive session belongs to ONE task of the project's task board
+(fractal): task {id} "{title}", file {path}
+Board: {url}tasks.html#{project}/{id}
+
+The owner works on this task both here and in the web board, and the task
+file is the shared record of both. So:
+- Read the task file before answering anything about the task, and again
+  whenever the owner refers to it: the board, or a headless run started from
+  it, may have added answers, feedback, a plan or a result since you looked.
+- The file: the owner's request before the first "## " heading, then dated
+  sections (Plan, Questions, Answers, Feedback, Result, Run). Never edit it
+  by hand. Change the task only with `fractal-task` (this task is its
+  default), which appends, commits the file and updates the board live:
+    fractal-task show                          state, and the whole file
+    fractal-task plan|questions|answers|feedback|result <<'EOF'
+    ...
+    EOF                                        append a section
+    fractal-task approve | run | triage | move <status> | answer <text> | reject <text>
+                                               the board's own buttons
+    fractal-task claim | finish | release      implementing here, see below
+    fractal-task deploy                        ship this task alone (when done)
+- When the discussion here settles something - a decision, an answer, a
+  changed scope, a new plan - record it: "answers" for the owner's
+  decisions, "plan" for a revised plan, so that a run started from the
+  board acts on it. A plan you append replaces the previous one: write it
+  whole and short (what and why in two sentences, decisions, numbered
+  one-line steps, risks, size), never as a diff of the old one. Say in one
+  line what you recorded.
+- Implement here only when the owner asks for it. Start with
+  `fractal-task claim`: the task goes to in progress and the board will not
+  start another implementation; it fails while a run is going, and then you
+  do not touch the code. Commit only the files of your change, with a
+  message prefixed "task {id}: ", then `fractal-task result` (what was done,
+  the commits, how to check it) and `fractal-task finish` (-> review).
+  Stopping half way: `fractal-task release`.
+- Deploying: only `fractal-task deploy`, and only once the owner marked the
+  task done. It ships this task's commits alone. Never push the branch or
+  run the project's deploy by hand for a task: that ships every other
+  unreviewed task with it. After a deploy, do the follow-up steps the
+  Result names (migrations, rebuilds, backfills) when the owner asks.
+- Runs started from the board continue THIS conversation: the window
+  closes while one works and comes back with everything it did. When the
+  owner asks what a run did or why it failed, it is right here above.
+- While a headless run is implementing (`fractal-task show` says so), do
+  not change code in the working tree.
+Talk to the owner and write into the task file in {lang}."""
+
+_session_lock = threading.Lock()
+
+
+def live_sessions() -> set[str]:
+    r = tmux("list-sessions", "-F", "#{session_name}")
+    return set(r.stdout.split()) if r.returncode == 0 else set()
+
+
+def session_title(t: dict) -> str:
+    return f"{t['id']} · {' '.join(str(t['title']).split())}"[:TITLE_LEN]
+
+
+def ensure_session(proj: dict, t: dict) -> tuple[str | None, str]:
+    """(tmux session, "") with the task's Claude running in it, or (None, why)."""
+    name, root = proj["name"], proj["root"]
+    with _session_lock:
+        rec = T.task_session(name, t["id"])
+        if rec.get("session") in live_sessions():
+            return rec["session"], ""
+        agent = CFG["FRACTAL_AGENT"]
+        args = [shutil.which(agent) or os.path.join(BIN, agent)]
+        args += shlex.split(CFG["FRACTAL_AGENT_FLAGS"]) + shlex.split(proj.get("claudeArgs") or "")
+        sid = None
+        if os.path.basename(agent) == "claude":
+            sid = rec.get("id")
+            if sid and T.has_transcript(sid):
+                args += ["--resume", sid]                   # the conversation comes back
+            else:
+                sid = str(uuid.uuid4())
+                args += ["--session-id", sid]
+            args += ["--name", session_title(t), "--append-system-prompt", SESSION_PROMPT.format(
+                id=t["id"], title=t["title"], path=t["path"], url=URL, project=name,
+                lang=CFG["FRACTAL_TASK_LANG"].strip() or "the owner's language")]
+        # in the command itself: new-session hands its first process the
+        # environment of the calling client, so an -e PATH does not reach it
+        cmd = f"export PATH={shlex.quote(BIN)}:\"$PATH\"; {shlex.join(args)}; exec bash"
+        registered = {p.get("name") for p in T.registry_projects()}
+        for n in range(1, 100):
+            sess = f"{name}-p{n}"
+            if sess in registered:
+                continue
+            # new-session refuses an existing name, which makes picking the number atomic
+            r = tmux("new-session", "-d", "-s", sess, "-n", "agent", "-c", root,
+                     "-e", f"FRACTAL_TASK={name}/{t['id']}", cmd)
+            if r.returncode == 0:
+                break
+            if "duplicate session" not in r.stderr:
+                return None, r.stderr.strip() or "tmux failed"
+        else:
+            return None, "no free p<n> session number"
+        tmux("set-option", "-t", f"={sess}:", TITLE_OPT, session_title(t))
+        T.set_task_session(name, t["id"], session=sess, id=sid)
+    log(f"{name}: task {t['id']} session {sess}")
+    return sess, ""
+
+
+def close_session(name: str, task_id: str) -> None:
+    rec = T.task_session(name, task_id)
+    if rec.get("session") in live_sessions():
+        tmux("kill-session", "-t", "=" + rec["session"])
+    T.set_task_session(name, task_id, session=None, id=None, driver=None)
+
+
+def session_info(name: str) -> dict[str, dict]:
+    """task id -> {"win", "alive", "driver"} for the tasks that have a session
+    or a conversation to resume (a run left one, its window is closed)."""
+    live = live_sessions()
+    out = {}
+    for key, rec in T.load_state().get("sessions", {}).items():
+        proj, _, tid = key.partition("/")
+        if proj == name and (rec.get("session") or rec.get("id")):
+            sess = rec.get("session") or ""
+            out[tid] = {"win": sess[len(name) + 1:], "alive": bool(sess) and sess in live,
+                        "driver": bool(rec.get("driver"))}
+    return out
+
+
+# --- where a task's code is: committed, pushed, deployed ---------------------------
+# The agent commits with the prefix "task <id>: "; the board's own bookkeeping
+# touches tasks/ only and does not count. Pushed = reachable from the branch's
+# upstream. Deployed = reachable from the commit the project's deploy_check
+# prints (a board setting, machine-local: e.g. an ssh that prints the
+# production checkout's HEAD). That command runs in the watcher every
+# DEPLOY_POLL seconds or on request, never inside a page load.
+
+_deployed: dict[str, dict] = {}          # project -> {"sha", "at", "error"}
+_deploy_asked: dict[str, float] = {}     # project -> monotonic time of the last check
+
+
+def check_deployed(proj: dict) -> bool:
+    """Ask the production for its commit; True when the answer changed."""
+    name, root = proj["name"], proj["root"]
+    cmd = T.project_settings(name)["deploy_check"]
+    old = _deployed.get(name)
+    if not cmd:
+        _deployed.pop(name, None)
+        return old is not None
+    sha, error = "", ""
+    try:
+        r = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True, timeout=40)
+        ref = (r.stdout.split() or [""])[0]
+        if r.returncode != 0 or not ref:
+            error = (r.stderr.strip() or f"exit {r.returncode}")[-200:]
+        else:
+            def resolve() -> str:
+                return T.git(root, "rev-parse", "--verify", "-q", ref + "^{commit}").stdout.strip()
+            sha = resolve()
+            if not sha:
+                T.fetch_upstream(root)                  # the production may be ahead of our last fetch
+                sha = resolve()
+            if not sha:
+                error = f"{ref[:12]} is not a commit of this repository"
+    except subprocess.TimeoutExpired:
+        error = "deploy_check timed out"
+    _deployed[name] = {"sha": sha, "at": time.strftime("%Y-%m-%d %H:%M"), "error": error}
+    return (old or {}).get("sha") != sha or (old or {}).get("error") != error
+
+
+def code_refs(root: str) -> tuple[str, str]:
+    """(HEAD, upstream of the current branch) as full hashes, '' when absent."""
+    head = T.git(root, "rev-parse", "-q", "--verify", "HEAD").stdout.strip()
+    up = T.git(root, "rev-parse", "-q", "--verify", "@{upstream}").stdout.strip()
+    return head, up
+
+
+@functools.lru_cache(maxsize=256)
+def _missing(root: str, head: str, ref: str) -> frozenset | None:
+    return frozenset(T.missing_from(root, ref, head)) if ref else None
+
+
+@functools.lru_cache(maxsize=1024)
+def _commits(root: str, head: str, tid: str) -> tuple:
+    return tuple(T.task_commits(root, tid, head))
+
+
+def code_state(proj: dict, refs: tuple[str, str], tid: str) -> dict | None:
+    """{"state": local|pushed|deployed, "commits": [...], "checked", "error"}
+    for a task with commits of its own, else None. pushed means "not known
+    to be deployed" when the project has no deploy_check."""
+    head, up = refs
+    rows = _commits(proj["root"], head, tid) if head else ()
+    if not rows:
+        return None
+    st = T.project_settings(proj["name"])
+    dep = _deployed.get(proj["name"]) or {}
+    not_up, not_dep = _missing(proj["root"], head, up), _missing(proj["root"], head, dep.get("sha", ""))
+    commits = [{"sha": h, "subject": s, "pushed": not_up is not None and full not in not_up,
+                "deployed": not_dep is not None and full not in not_dep} for full, h, s in rows]
+    state = "deployed" if all(c["deployed"] for c in commits) else \
+            "pushed" if all(c["pushed"] for c in commits) else "local"
+    return {"state": state, "upstream": bool(up), "tracked": bool(st["deploy_check"]),
+            "checked": dep.get("at", ""), "error": dep.get("error", ""), "commits": commits}
 
 
 # --- events -----------------------------------------------------------------------
@@ -171,12 +431,35 @@ def watcher() -> None:
                     sigs[name] = s
                     changed = True
                 r = runs(name)
-                if seen_runs.get(name) != r:
-                    seen_runs[name] = r
+                live = (r, sorted((k, v["alive"]) for k, v in session_info(name).items()), code_refs(proj["root"]),
+                        sorted(deploys(name).items()))
+                if set(seen_runs.get(name, ((), (), (), ()))[3]) - set(live[3]):
+                    _deploy_asked[name] = -DEPLOY_POLL            # a deploy just finished: ask now
+                if T.project_settings(name)["deploy_check"] and \
+                        time.monotonic() - _deploy_asked.get(name, -DEPLOY_POLL) >= DEPLOY_POLL:
+                    _deploy_asked[name] = time.monotonic()
+                    threading.Thread(target=lambda p=proj: check_deployed(p) and broadcast({"project": p["name"]}),
+                                     daemon=True).start()
+                if seen_runs.get(name) != live:
+                    seen_runs[name] = live
                     changed = True
                 tasks = T.list_tasks(proj)
+                sess = session_info(name)
                 # a run whose window is gone but whose outcome never got written
                 for t in tasks:
+                    s_ = sess.get(t["id"])
+                    if s_ and s_["driver"] and t["status"] != "in-progress":
+                        T.set_task_session(name, t["id"], driver=None)    # moved on from the board
+                        s_ = None
+                    if t["status"] == "in-progress" and s_ and s_["driver"]:
+                        if not s_["alive"]:
+                            t["status"] = "need-attention"
+                            T.append(t, "Error", "the task's terminal session was closed while implementing "
+                                     "- check the working tree and continue or start a run", who="board")
+                            T.write(t)
+                            T.set_task_session(name, t["id"], driver=None)
+                            changed = True
+                        continue
                     if t["status"] in T.RUNNING and t["id"] not in r:
                         since = _launched.get((name, t["id"]))
                         age = time.monotonic() - since if since else ORPHAN_AFTER + 1
@@ -208,11 +491,24 @@ def watcher() -> None:
 
 # --- presentation -----------------------------------------------------------------
 
-def public(t: dict, run_panes: dict[str, str]) -> dict:
+def public(t: dict, run_panes: dict[str, str], sessions: dict[str, dict] | None = None,
+           code: tuple[dict, tuple[str, str]] | None = None) -> dict:
     out = {k: t.get(k) for k in ("id", "title", "status", "order", "priority", "assignee", "phase",
                                  "verify", "timeout_minutes", "created", "updated", "file", "request", "sections")}
     out["run"] = {"pane": run_panes[t["id"]]} if is_running(t, run_panes) else None
+    s = (sessions or {}).get(t["id"])
+    out["session"] = dict(s, driver=s["driver"] and t["status"] == "in-progress") if s else None
+    out["code"] = code_state(code[0], code[1], t["id"]) if code and t.get("phase") != "triage" else None
+    dp = deploys(code[0]["name"]).get(t["id"]) if code else None
+    out["deploy"] = {"pane": dp} if dp else None
     return out
+
+
+def public_settings(name: str) -> dict:
+    """The deploy commands name hosts: the page learns only whether they exist."""
+    st = T.project_settings(name)
+    return {"auto": st["auto"], "auto_triage": st["auto_triage"],
+            "deploy": bool(st["deploy_run"]), "deploy_check": bool(st["deploy_check"])}
 
 
 def project_summary(proj: dict) -> dict:
@@ -221,14 +517,16 @@ def project_summary(proj: dict) -> dict:
     for t in tasks:
         counts[t["status"]] = counts.get(t["status"], 0) + 1
     return {"name": proj["name"], "title": proj.get("title") or proj["name"], "group": proj.get("group"),
-            "color": proj.get("color"), "counts": counts, "settings": T.project_settings(proj["name"]),
+            "color": proj.get("color"), "counts": counts, "settings": public_settings(proj["name"]),
             "running": sorted(t["id"] for t in tasks if is_running(t, runs(proj["name"])))}
 
 
 def latest_log(proj: dict, task_id: str) -> str:
     d = os.path.join(T.tasks_dir(proj), T.LOGS_DIRNAME)
     try:
-        names = sorted(n for n in os.listdir(d) if n.startswith(task_id + "-") and n.endswith(".log"))
+        # by time: a deploy log sorts before a triage one by name
+        names = sorted((n for n in os.listdir(d) if n.startswith(task_id + "-") and n.endswith(".log")),
+                       key=lambda n: os.stat(os.path.join(d, n)).st_mtime)
     except OSError:
         return ""
     if not names:
@@ -298,13 +596,16 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 2:
                 archive = (q.get("archive") or ["0"])[0] == "1"
                 panes = {} if archive else runs(proj["name"])
+                sess = {} if archive else session_info(proj["name"])
+                code = (proj, code_refs(proj["root"]))
                 return self._json(200, {"project": project_summary(proj),
-                                        "tasks": [public(t, panes) for t in T.list_tasks(proj, archive=archive)]})
+                                        "tasks": [public(t, panes, sess, code) for t in T.list_tasks(proj, archive=archive)]})
             t = self._task(proj, parts[2])
             if not t:
                 return
             if len(parts) == 3:
-                return self._json(200, public(t, runs(proj["name"])))
+                return self._json(200, public(t, runs(proj["name"]), session_info(proj["name"]),
+                                              (proj, code_refs(proj["root"]))))
             if len(parts) == 4 and parts[3] == "log":
                 return self._json(200, {"log": latest_log(proj, t["id"])})
         self._json(404, {"error": "unknown endpoint"})
@@ -360,8 +661,18 @@ class Handler(BaseHTTPRequestHandler):
             for k in ("auto", "auto_triage"):
                 if k in body:
                     st = T.set_project_setting(name, k, bool(body[k]))
+            for k in T.DEPLOY_SETTINGS:
+                if k in body:
+                    T.set_project_setting(name, k, str(body[k] or "").strip())
+            if "deploy_check" in body:
+                threading.Thread(target=lambda: check_deployed(proj) and broadcast({"project": name}), daemon=True).start()
             broadcast({"project": name})
-            return self._json(200, st)
+            return self._json(200, public_settings(name))
+
+        if parts[1] == "deploy-check" and method == "POST":
+            if check_deployed(proj):
+                broadcast({"project": name})
+            return self._json(200, _deployed.get(name) or {})
 
         if parts[1] != "tasks":
             return self._json(404, {"error": "unknown endpoint"})
@@ -387,8 +698,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not ok:
                     log(f"{name}: triage of {t['id']} not started: {msg}")
             T.commit_task_file(proj["root"], t["path"], f"task {t['id']}: new")
+            _sess, why = ensure_session(proj, t)
+            if why:
+                log(f"{name}: session of {t['id']} not started: {why}")
             broadcast({"project": name})
-            return self._json(201, public(T.load(t["path"]), runs(name)))
+            return self._json(201, public(T.load(t["path"]), runs(name), session_info(name)))
 
         t = self._task(proj, parts[2])
         if not t:
@@ -399,6 +713,9 @@ class Handler(BaseHTTPRequestHandler):
         if method == "PATCH" and not action:
             if "title" in body:
                 t["title"] = " ".join(str(body["title"]).split())[:200] or t["title"]
+                rec = T.task_session(name, t["id"])
+                if rec.get("session") in live_sessions():
+                    tmux("set-option", "-t", f"={rec['session']}:", TITLE_OPT, session_title(t))
             if "priority" in body and body["priority"] in T.PRIORITIES:
                 t["priority"] = body["priority"]
             if "assignee" in body:
@@ -498,9 +815,12 @@ class Handler(BaseHTTPRequestHandler):
             broadcast({"project": name})
             return self._json(200, public(T.load(t["path"]), runs(name)))
 
-        if action in ("run", "triage"):
+        if action in ("run", "triage", "verify"):
             if running:
                 return self._json(409, {"error": "already running"})
+            if action == "verify" and not t.get("verify"):
+                return self._json(409, {"error": "the task has no verify command"})
+            # a verify only runs a command: the owner asked for it, so it may share the tree with a run
             if action == "run" and any(x["status"] == "in-progress" for x in T.list_tasks(proj)):
                 return self._json(409, {"error": "another task is being implemented; one at a time per project"})
             ok, msg = launch(proj, t, action)
@@ -508,6 +828,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(409, {"error": msg})
             broadcast({"project": name})
             return self._json(202, public(T.load(t["path"]), runs(name)))
+
+        if action == "deploy":
+            if not T.project_settings(name)["deploy_run"]:
+                return self._json(409, {"error": "this project has no deploy_run configured"})
+            if deploys(name):
+                return self._json(409, {"error": "a deploy is already running"})
+            ids = [t["id"]] + [str(x) for x in (body.get("with") or []) if str(x) != t["id"]]
+            for i in ids:
+                x = T.find(proj, i) if ID_RE.match(i) else None
+                if not x:
+                    return self._json(404, {"error": f"no task {i}"})
+                if x["status"] != "done":
+                    return self._json(409, {"error": f"task {i} is not done: only reviewed work is deployed"})
+            ok, msg = launch_deploy(proj, ids)
+            if not ok:
+                return self._json(500, {"error": msg})
+            broadcast({"project": name})
+            return self._json(202, {"deploying": ids})
 
         if action == "stop":
             if not stop(proj, t):
@@ -519,6 +857,7 @@ class Handler(BaseHTTPRequestHandler):
             if t["status"] not in ("done", "canceled"):
                 return self._json(409, {"error": "only done or canceled tasks are archived"})
             target = T.archive(t)
+            close_session(name, t["id"])
             root = proj["root"]
             if T.tracked(root, target):
                 T.git(root, "add", "-A", "--", os.path.relpath(T.tasks_dir(proj), root))
@@ -526,6 +865,51 @@ class Handler(BaseHTTPRequestHandler):
                       os.path.relpath(T.tasks_dir(proj), root))
             broadcast({"project": name})
             return self._json(200, {"archived": os.path.basename(target)})
+
+        if action == "session":
+            if is_running(t, runs(name)):
+                # the run continues the same conversation; two writers would tangle it
+                return self._json(409, {"error": "the agent is running in this conversation: watch the run, the session comes back afterwards"})
+            sess, why = ensure_session(proj, t)
+            if not sess:
+                return self._json(500, {"error": f"could not start the session: {why}"})
+            broadcast({"project": name})
+            return self._json(200, {"session": sess, "win": sess[len(name) + 1:]})
+
+        if action == "note":
+            kind = str(body.get("kind") or "").capitalize()
+            text = str(body.get("text") or "").strip()
+            who = re.sub(r"[^\w .·-]", "", str(body.get("who") or "terminal"))[:30] or "terminal"
+            if kind not in NOTE_KINDS:
+                return self._json(400, {"error": f"kind must be one of {', '.join(NOTE_KINDS)}"})
+            if not text:
+                return self._json(400, {"error": "empty text"})
+            T.append(t, kind, text[:MAX_BODY], who=who)
+            T.commit_task_file(proj["root"], t["path"], f"task {t['id']}: {kind.lower()}")
+            broadcast({"project": name})
+            return self._json(200, public(T.load(t["path"]), runs(name), session_info(name)))
+
+        if action in ("claim", "finish", "release"):
+            rec = T.task_session(name, t["id"])
+            if action == "claim":
+                if running:
+                    return self._json(409, {"error": "a run of this task is going; wait or stop it"})
+                if any(x["status"] == "in-progress" and x["id"] != t["id"] for x in T.list_tasks(proj)):
+                    return self._json(409, {"error": "another task is being implemented; one at a time per project"})
+                if rec.get("session") not in live_sessions():
+                    return self._json(409, {"error": "the task has no running session"})
+                t["status"], t["phase"] = "in-progress", "dev"
+                T.set_task_session(name, t["id"], driver=True)
+            else:
+                if not (rec.get("driver") and t["status"] == "in-progress"):
+                    return self._json(409, {"error": "the task is not being implemented from its session"})
+                t["status"] = "review" if action == "finish" else "backlog"
+                t["order"] = T.next_order(proj, t["status"])
+                T.set_task_session(name, t["id"], driver=None)
+            T.write(t)
+            T.commit_task_file(proj["root"], t["path"], f"task {t['id']}: -> {t['status']}")
+            broadcast({"project": name})
+            return self._json(200, public(T.load(t["path"]), runs(name), session_info(name)))
 
         self._json(404, {"error": "unknown action"})
 

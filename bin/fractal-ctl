@@ -26,11 +26,23 @@ when it finishes - a power cut in the middle of a start must not lose what
 the user asked for.
 
 Endpoints (all relative to /ctl/):
-    GET  /state                          up/busy/last per controllable project
+    GET  /state                          up/busy/last per controllable project,
+                                         plus "terms": extra terminal sessions <project>-p<n>/-s<n>
     POST /<project>/start|stop           run the registry command
+    POST /<project>/term/p|s             create the next free extra terminal; returns {win}
+    POST /<project>/term/<window>/close  kill an extra terminal session (p<n> or s<n> only)
+    GET  /term-title?arg=<terminal>      tab name of a browser terminal and the prefix the
+                                         tab shows before it (404 = not ours, 409 = ours
+                                         but not running)
+    POST /term-title {arg, title}        set it; an empty title removes it
     POST /agent/<project>/send  {text}   paste text into the project's agent window
     POST /agent/<project>/query {q}      headless question; returns {id}
     GET  /agent/<project>/query/<id>     poll the streamed answer
+    POST /chat {q, session, project}     free conversation with the agent - in $HOME, or in
+                                         the project's root with its claudeArgs when project
+                                         is given; session = id from a previous answer
+                                         continues that conversation; returns {id}
+    GET  /chat/<id>                      poll it like a query; done answers carry "session"
     POST /run/<project>/<hook>           run a named hook from the registry
     GET  /run/<project>/<hook>           status of the last/current run
     GET  /sessions                       live Claude Code sessions (fractal_sessions)
@@ -38,12 +50,14 @@ Endpoints (all relative to /ctl/):
 """
 import json
 import os
+import re
 import shlex
 import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -55,6 +69,12 @@ PORT = port("CTL")
 PROBE_TIMEOUT = 0.4          # a local port answers at once, or it is down
 ACTION_TIMEOUT = 300         # docker compose up can be lazy, but not forever
 QUERY_TIMEOUT = 600
+# a chat is read on a phone (Telegram): the client cannot render Markdown
+CHAT_PROMPT = ("The user is chatting with you from their phone through a Telegram bot. "
+               "Telegram shows your reply as plain text: no Markdown tables, headings or "
+               "bold, use short paragraphs and simple dashes for lists. Be concise unless "
+               "asked for detail. You are on the user's server and can use your tools "
+               "when the conversation needs it.")
 HOOK_TIMEOUT = 1800
 MAX_TEXT = 100_000
 AGENT_WINDOW = CFG["FRACTAL_AGENT_WINDOW"]
@@ -65,7 +85,7 @@ ENV = bin_path_env()
 # last result: name -> {"ok": bool, "msg": str, "at": float}
 _busy: dict[str, dict] = {}
 _last: dict[str, dict] = {}
-_qjobs: dict[str, dict] = {}          # id -> {"done", "ok", "answer", "at"}
+_qjobs: dict[str, dict] = {}          # id -> {"done", "ok", "answer", "at"[, "session"]}
 _hooks: dict[str, dict] = {}          # "name/hook" -> {"running", "ok", "msg", "at", "took"}
 _lock = threading.Lock()
 
@@ -130,6 +150,167 @@ def snapshot() -> dict:
     return out
 
 
+# Extra terminals of a project, opened from the dashboard as
+# /term/?arg=<project>:<window>: p<n> = a new agent conversation, s<n> = a
+# shell, each in a tmux session of its own named <project>-<window>.
+TERM_WIN = re.compile(r"^[ps][1-9][0-9]?$")
+TERM_SESSION = re.compile(r"^(.+)-([ps][1-9][0-9]?)$")
+
+
+def term_owner(session: str, names: set) -> tuple[str, str] | None:
+    """(project, window) when the session is an extra terminal. A registered
+    project of the same name owns the session - shop-p1 the project wins over
+    shop-p1 the extra terminal of shop."""
+    m = TERM_SESSION.match(session)
+    if not m or session in names or m.group(1) not in names:
+        return None
+    return m.group(1), m.group(2)
+
+
+def term_windows() -> dict:
+    """{project: [{"win", "pane", "title"}]} for every extra terminal session;
+    pane is its active pane, which the dashboard pairs with the Claude session
+    list, title the tab name given in the terminal ("" when none)."""
+    try:
+        r = subprocess.run(["tmux", "list-sessions", "-F",
+                            "#{session_name}\t#{pane_id}\t#{" + TITLE_OPT + "}"],
+                           capture_output=True, text=True, timeout=5, env=ENV)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    names = {p.get("name") for p in registry().get("projects", [])}
+    out = {}
+    for line in r.stdout.splitlines():
+        sess, pane, title = (line.split("\t") + ["", ""])[:3]
+        own = term_owner(sess, names)
+        if own:
+            out.setdefault(own[0], []).append({"win": own[1], "pane": pane.lstrip("%"), "title": title})
+    for ws in out.values():
+        ws.sort(key=lambda w: (w["win"][0], int(w["win"][1:])))
+    return out
+
+
+def close_term(name: str, win: str) -> bool:
+    """Kill one extra terminal session. Only <project>-p<n>/-s<n> of a
+    registered project - never the project's own session or another project's."""
+    names = {p.get("name") for p in registry().get("projects", [])}
+    if name not in names or not TERM_WIN.match(win):
+        return False
+    sess = f"{name}-{win}"
+    if term_owner(sess, names) is None:
+        return False
+    r = subprocess.run(["tmux", "kill-session", "-t", "=" + sess],
+                       capture_output=True, timeout=5, env=ENV)
+    return r.returncode == 0
+
+
+_term_lock = threading.Lock()
+
+
+def new_term(name: str, kind: str) -> str | None:
+    """Create the next free extra terminal <project>-<kind><n> and return its
+    window (p3). The number is picked here, under a lock, from what tmux runs
+    right now - a dashboard with a stale list must never land in an existing
+    session and pass its conversation and tab name off as a new one."""
+    names = {p.get("name") for p in registry().get("projects", [])}
+    if name not in names or kind not in ("p", "s"):
+        return None
+    with _term_lock:
+        used = {w["win"] for w in term_windows().get(name, [])}
+        for n in range(1, 100):
+            win = f"{kind}{n}"
+            if win in used or f"{name}-{win}" in names:
+                continue
+            if _tmux("has-session", "-t", f"={name}-{win}").returncode == 0:
+                continue                  # e.g. a session that is not ours by name
+            r = subprocess.run(["work", "-d", name, win], capture_output=True,
+                               text=True, timeout=15, env=ENV)
+            return win if r.returncode == 0 else None
+    return None
+
+
+# Name of a browser terminal tab, set from the terminal page (the pencil icon
+# from termkeys.js). It lives in tmux as a user option, so every device shows
+# the same name and it disappears together with the terminal. The page only
+# sends its own address (?arg= or the path); which tmux object that is gets
+# decided here, by the same rules as `term` and `work`.
+TITLE_OPT = "@fractal_title"
+TITLE_LEN = 60
+
+
+NOT_OURS, NOT_RUNNING = "not ours", "not running"
+
+
+def title_target(arg: str) -> tuple[list[str], str] | str:
+    """(scope flags, tmux target) holding the tab name for a terminal address,
+    NOT_OURS for an address the server does not manage, NOT_RUNNING for one
+    of ours with nothing running there (yet, or any more)."""
+    names = {p.get("name") for p in registry().get("projects", [])}
+    m = re.match(r"^pane:(\d+)$", arg)
+    if m:
+        # a pane opened from the session list: the name belongs to its window
+        r = _tmux("display", "-p", "-t", "%" + m.group(1), "#{window_id}")
+        return (["-w"], r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else NOT_RUNNING
+    m = re.match(r"^([^:]+):([ps][1-9][0-9]?)$", arg)
+    if m:
+        own = term_owner(f"{m.group(1)}-{m.group(2)}", names)
+        sess = f"{own[0]}-{own[1]}" if own else None
+    elif arg in ("home", "~"):
+        sess = "home"
+    else:
+        sess = arg if arg in names else None
+    if not sess:
+        return NOT_OURS
+    if _tmux("has-session", "-t", "=" + sess).returncode != 0:
+        return NOT_RUNNING
+    # set/show-options take a target-PANE: "=sess" alone would be read as a
+    # window name; "=sess:" is that session (its current window)
+    return [], f"={sess}:"
+
+
+def get_title(arg: str) -> tuple[str | None, str]:
+    """(title, "") or (None, NOT_OURS / NOT_RUNNING)."""
+    t = title_target(arg)
+    if isinstance(t, str):
+        return None, t
+    if t[0] == ["-w"]:
+        # a pane opened from the session list: its window's own name, else the
+        # one its session got as an extra terminal (a format looks up both)
+        r = _tmux("display", "-p", "-t", t[1], "#{" + TITLE_OPT + "}")
+    else:
+        r = _tmux("show-options", "-v", "-q", *t[0], "-t", t[1], TITLE_OPT)
+    return r.stdout.rstrip("\n"), ""
+
+
+def title_prefix(arg: str) -> str:
+    """What the tab shows before a given name: the registry group of the
+    terminal's project ("Work: chart fixes"), its name when it has no group,
+    "" for home and panes outside projects."""
+    names = {p.get("name") for p in registry().get("projects", [])}
+    m = re.match(r"^pane:(\d+)$", arg)
+    if m:
+        r = _tmux("display", "-p", "-t", "%" + m.group(1), "#{session_name}")
+        sess = r.stdout.strip() if r.returncode == 0 else ""
+        own = term_owner(sess, names)
+        name = own[0] if own else sess
+    else:
+        name = arg.split(":", 1)[0]
+    p = project(name) if name in names else {}
+    return (p.get("group") or p.get("name") or "") if p else ""
+
+
+def set_title(arg: str, title: str) -> str:
+    """"" when set, otherwise NOT_OURS / NOT_RUNNING / "failed"."""
+    t = title_target(arg)
+    if isinstance(t, str):
+        return t
+    title = "".join(c for c in title if c.isprintable()).strip()[:TITLE_LEN]
+    if title:
+        r = _tmux("set-option", *t[0], "-t", t[1], TITLE_OPT, title)
+    else:
+        r = _tmux("set-option", "-u", *t[0], "-t", t[1], TITLE_OPT)
+    return "" if r.returncode == 0 else "failed"
+
+
 def await_state(p, want_up: bool, grace: float) -> bool:
     deadline = time.monotonic() + grace
     while True:
@@ -187,7 +368,9 @@ def _tmux(*args: str, text_in: str | None = None) -> subprocess.CompletedProcess
 
 
 def agent_target(name: str) -> str:
-    return f"{name}:{AGENT_WINDOW}"
+    # "=": exact session name - a bare "shop" would also match "shop-p1"
+    # (an extra terminal) whenever the project session itself is not running
+    return f"={name}:{AGENT_WINDOW}"
 
 
 def pane_exists(target: str) -> bool:
@@ -244,11 +427,11 @@ def ensure_agent(name: str) -> str | None:
             return None
         # window exists but the agent died into the fallback shell - respawn
         _tmux("respawn-window", "-k", "-t", target, cmd)
-    elif _tmux("has-session", "-t", name).returncode == 0:
-        _tmux("new-window", "-t", name, "-n", AGENT_WINDOW, "-c", root, cmd)
+    elif _tmux("has-session", "-t", "=" + name).returncode == 0:
+        _tmux("new-window", "-t", f"={name}:", "-n", AGENT_WINDOW, "-c", root, cmd)
     else:
         _tmux("new-session", "-d", "-s", name, "-n", AGENT_WINDOW, "-c", root, cmd)
-        _tmux("new-window", "-t", name, "-n", "shell", "-c", root)
+        _tmux("new-window", "-t", f"={name}:", "-n", "shell", "-c", root)
 
     deadline = time.monotonic() + 45
     while time.monotonic() < deadline:
@@ -281,15 +464,30 @@ def agent_send(name: str, text: str) -> str | None:
 
 
 def run_query(jid: str, name: str, q: str) -> None:
-    """Own thread; the dashboard polls the result.
+    """A project question: claude in the project root with its claudeArgs."""
+    p = project(name)
+    run_claude(jid, p.get("root") or HOME, shlex.split(p.get("claudeArgs") or ""), q)
+
+
+def run_chat(jid: str, q: str, session: str, name: str) -> None:
+    """A chat turn: claude in $HOME or in a project's root, continuing
+    `session` when given (sessions belong to a directory, so the client keeps
+    one per context)."""
+    p = project(name) if name else {}
+    extra = shlex.split(p.get("claudeArgs") or "") + ["--append-system-prompt", CHAT_PROMPT]
+    if session:
+        extra += ["--resume", session]
+    run_claude(jid, p.get("root") or HOME, extra, q)
+
+
+def run_claude(jid: str, root: str, extra: list[str], q: str) -> None:
+    """Own thread; the client polls the result.
 
     The answer is STREAMED: claude runs with stream-json output and every text
     delta is appended to the job at once, so polling shows the answer while it
     is being written. The final "result" event replaces the text with the
-    authoritative version."""
-    p = project(name)
-    root = p.get("root") or HOME
-    extra = shlex.split(p.get("claudeArgs") or "")
+    authoritative version. The session id of the run is kept in the job, so a
+    chat can --resume it with the next message."""
     flags = shlex.split(CFG["FRACTAL_AGENT_FLAGS"])
 
     def put(text: str, done: bool = False, okv: bool = False) -> None:
@@ -300,6 +498,13 @@ def run_query(jid: str, name: str, q: str) -> None:
             j["answer"] = text
             if done:
                 j["done"], j["ok"], j["at"] = True, okv, time.time()
+
+    def remember_session(obj: dict) -> None:
+        sid = obj.get("session_id")
+        if sid:
+            with _lock:
+                if jid in _qjobs:
+                    _qjobs[jid]["session"] = sid
 
     if CFG["FRACTAL_AGENT"] != "claude":
         put("headless queries are only implemented for claude", done=True)
@@ -328,6 +533,8 @@ def run_query(jid: str, name: str, q: str) -> None:
             except ValueError:
                 continue
             t = obj.get("type")
+            if t in ("system", "result"):
+                remember_session(obj)
             if t == "stream_event":
                 ev = obj.get("event") or {}
                 if ev.get("type") == "content_block_start" \
@@ -400,12 +607,22 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in self.path.split("?")[0].split("/") if p]
         try:
             if not parts or parts == ["state"]:
-                self._send(200, {"projects": snapshot()})
+                self._send(200, {"projects": snapshot(), "terms": term_windows()})
             elif parts == ["sessions"]:
                 self._send(200, {"sessions": fractal_sessions.collect(), "now": time.time()})
-            elif len(parts) == 4 and parts[0] == "agent" and parts[2] == "query":
+            elif parts == ["term-title"]:
+                q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                # 404 = not ours (the page keeps the name itself), 409 = ours
+                # but not running yet (the page asks again, never keeps it)
+                t, why = get_title((q.get("arg") or [""])[0])
+                if t is None:
+                    self._send(404 if why == NOT_OURS else 409, {"error": why})
+                else:
+                    self._send(200, {"title": t, "prefix": title_prefix((q.get("arg") or [""])[0])})
+            elif (len(parts) == 4 and parts[0] == "agent" and parts[2] == "query") \
+                    or (len(parts) == 2 and parts[0] == "chat"):
                 with _lock:
-                    j = _qjobs.get(parts[3])
+                    j = _qjobs.get(parts[-1])
                 self._send(404, {"error": "unknown query"}) if j is None else self._send(200, j)
             elif len(parts) == 3 and parts[0] == "run":
                 with _lock:
@@ -421,16 +638,40 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if len(parts) == 3 and parts[0] == "agent":
                 return self._agent(parts[1], parts[2])
+            if parts == ["chat"]:
+                body = self._json_body() or {}
+                q = (body.get("q") or "").strip()
+                session = str(body.get("session") or "")
+                if not q:
+                    return self._send(400, {"error": "empty message"})
+                name = str(body.get("project") or "")
+                if session and not re.fullmatch(r"[0-9a-f-]{36}", session):
+                    return self._send(400, {"error": "session must be a session id"})
+                if name and not project(name):
+                    return self._send(404, {"error": f"unknown project '{name}'"})
+                return self._send(202, {"id": self._new_job(run_chat, q, session, name)})
             if len(parts) == 3 and parts[0] == "run":
                 return self._run(parts[1], parts[2])
             if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "summary":
                 err = fractal_sessions.request_summary(parts[1])
                 return self._send(404, {"error": err}) if err else self._send(202, {"ok": True})
+            if parts == ["term-title"]:
+                body = self._json_body() or {}
+                why = set_title(str(body.get("arg") or ""), str(body.get("title") or ""))
+                if not why:
+                    return self._send(200, {"ok": True})
+                return self._send({NOT_OURS: 404, NOT_RUNNING: 409}.get(why, 500), {"error": why})
+            if len(parts) == 3 and parts[1] == "term" and parts[2] in ("p", "s"):
+                win = new_term(parts[0], parts[2])
+                return self._send(200, {"win": win}) if win else self._send(500, {"error": "could not create the terminal"})
+            if len(parts) == 4 and parts[1] == "term" and parts[3] == "close":
+                ok = close_term(parts[0], parts[2])
+                return self._send(200, {"ok": True}) if ok else self._send(404, {"error": "no such terminal"})
             if len(parts) == 2:
                 return self._toggle(parts[0], parts[1])
         except Exception as e:                                # noqa: BLE001
             return self._send(500, {"error": f"registry: {e}"})
-        self._send(404, {"error": "expected /<project>/<start|stop>, /agent/<project>/<send|query> or /run/<project>/<hook>"})
+        self._send(404, {"error": "expected /<project>/<start|stop>, /<project>/term/<p|s>, /<project>/term/<window>/close, /agent/<project>/<send|query> or /run/<project>/<hook>"})
 
     def _agent(self, name: str, what: str) -> None:
         if not project(name):
@@ -446,15 +687,19 @@ class Handler(BaseHTTPRequestHandler):
             q = (body.get("q") or "").strip()
             if not q:
                 return self._send(400, {"error": "empty question"})
-            jid = uuid.uuid4().hex[:12]
-            now = time.time()
-            with _lock:
-                for k in [k for k, v in _qjobs.items() if v.get("done") and now - v["at"] > 3600]:
-                    _qjobs.pop(k)                             # nobody collects hour-old jobs
-                _qjobs[jid] = {"done": False, "ok": None, "answer": "", "at": now}
-            threading.Thread(target=run_query, args=(jid, name, q), daemon=True).start()
-            return self._send(202, {"id": jid})
+            return self._send(202, {"id": self._new_job(run_query, name, q)})
         self._send(404, {"error": "agent verb must be send or query"})
+
+    @staticmethod
+    def _new_job(target, *args) -> str:
+        jid = uuid.uuid4().hex[:12]
+        now = time.time()
+        with _lock:
+            for k in [k for k, v in _qjobs.items() if v.get("done") and now - v["at"] > 3600]:
+                _qjobs.pop(k)                                 # nobody collects hour-old jobs
+            _qjobs[jid] = {"done": False, "ok": None, "answer": "", "at": now}
+        threading.Thread(target=target, args=(jid, *args), daemon=True).start()
+        return jid
 
     def _run(self, name: str, hook: str) -> None:
         p = project(name)

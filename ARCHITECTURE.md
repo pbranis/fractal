@@ -14,7 +14,7 @@ read, on every request, by:
 |---|---|
 | `www/index.html` | groups → tabs, projects → cards, `pinned` → highlighted section, `footer` |
 | `bin/work` | `root`, `ctl`, `claudeArgs` to prepare and attach a tmux session |
-| `bin/term` | validates the `?arg=` project name before handing over to `work`; `pane:<n>` attaches to an existing pane |
+| `bin/term` | validates the `?arg=` project name before handing over to `work`; `pane:<n>` attaches to an existing pane; `<name>:p<n>`/`<name>:s<n>` opens an extra terminal session `<name>-p<n>` |
 | `bin/fractal-ctl` | `service.start/stop/probe`, `hooks`, `sendPrefix` |
 | `bin/fractal-telegram` | validates project names; everything else goes through `fractal-ctl` |
 | `bin/fractal-autostart` | `service` to know which units to start at boot |
@@ -51,6 +51,48 @@ nginx only adds TLS-less routing and, crucially, the access-control layer.
 against the registry and calls `work <name>`. So one nginx location and one
 ttyd instance serve every project, present and future, and adding a project
 never needs root.
+
+**Extra terminals per project.** `/term/?arg=<name>` attaches to the
+project's tmux session (services + the main agent). `/term/?arg=<name>:p2`
+(a new agent conversation) or `:s1` (a shell) is a tmux session of its own,
+`<name>-p2` / `<name>-s1`, rooted in the project directory. The dashboard's ＋
+creates it first with `POST /ctl/<name>/term/p|s`: `fractal-ctl` picks the
+lowest free number from what tmux runs right now, under a lock, and starts it
+with `work -d <name> p2`; only then does the page open the address. `term`
+only attaches to an extra terminal - a closed one is never re-created, so an
+old browser tab reconnecting (or a stale dashboard list) cannot pass a new
+conversation off under an old address and name. Only `p<n>`/`s<n>` (1-99)
+gets through. These sessions are independent of the project session: stopping
+the services leaves them alone. A registered project whose name is exactly
+`<name>-p2` owns that session name; `work` refuses to create the extra
+terminal and the dashboard skips that number. `fractal-ctl` lists them in
+`/state` (`terms`) and kills one on `POST /<name>/term/<window>/close`;
+`fractal_sessions` files their agents under `<name>`.
+
+**Tab names.** The ✎ icon that `termkeys.js` adds to every terminal page
+renames the browser tab. The name is stored in tmux as the user option
+`@fractal_title` (`POST /ctl/term-title {arg, title}`): on the session for a
+project, `home` or an extra terminal, on the window for `pane:<n>`. So every
+device shows the same name, the dashboard shows it too, and it goes away
+with the terminal. The tab puts the project's registry group in front of it
+(`Work: chart fixes`, the `prefix` in `GET /ctl/term-title`); only the name
+itself is stored. The page only sends its own address; `fractal-ctl` maps it
+to a tmux target by the same rules as `term`. `GET /ctl/term-title` answers
+404 for an address it does not manage - only such terminals keep the name in
+that browser's localStorage - and 409 for one of its own that is not running;
+the page then asks again and never falls back to localStorage (it clears any
+stale entry), so a new `p5` cannot inherit the name of a closed `p5`.
+
+On the project card every agent terminal (`p<n>`) is a row of its own named,
+in this order, by the ✎ name, the `/rename` name, the title Claude gave the
+conversation; shells stay chips. `fractal_sessions` reports the ✎ name as
+`label` (one `tmux list-panes -a`) and keeps a `/rename` title over later
+ai-titles.
+
+Because of these names every fractal tmux call targets sessions exactly
+(`-t "=shop"`): tmux resolves a bare `shop` by prefix, so with the project
+session down it would land in `shop-p1`. Project control scripts should do
+the same (see `examples/ctl-script.sh`).
 
 ## Processes and lifetimes
 
@@ -169,6 +211,14 @@ prompt and last answer come from the transcript
 remembered byte offset (first read: at most the last 4 MB). The project is the
 tmux session name when it is in the registry, else the deepest `root` that
 holds the cwd.
+
+A session can also carry its task: a Claude Code mod may write
+`$FRACTAL_SESSION_TASK_DIR/<session id>.json` (default
+`~/.local/state/claude-task/`) with `summary` (one line: what the session is
+about), `active` (what it is doing right now), `done`/`total` (progress) and
+`pinned`. When the file exists, the summary replaces the conversation title on
+the card and `active` with the progress is a line under it; nothing else
+depends on it.
 
 The one-sentence summary is on demand only (`POST /ctl/sessions/<id>/summary`):
 `claude -p --model haiku` with no tools, no setting sources and no session

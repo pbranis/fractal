@@ -63,6 +63,28 @@
   .sw[aria-checked="true"]{background:var(--good)}
   .sw[aria-checked="true"]::after{transform:translateX(16px)}
 
+  .helpbtn{appearance:none;border:1px solid var(--border);background:var(--card);border-radius:8px;padding:4px 10px;
+           cursor:pointer;font-size:13px;color:var(--text2)}
+  .helpbtn:hover{background:var(--chip);color:var(--text)}
+
+  /* ---- help ---- */
+  .help{border:1px solid var(--border);border-radius:14px;padding:0;background:var(--card);color:var(--text);
+        width:min(760px,calc(100vw - 32px));max-height:calc(100vh - 48px);box-shadow:0 20px 60px rgba(0,0,0,.3)}
+  .help::backdrop{background:rgba(0,0,0,.35)}
+  .help .hhead{display:flex;align-items:center;gap:10px;padding:14px 20px;border-bottom:1px solid var(--border);
+               position:sticky;top:0;background:var(--card)}
+  .help .hhead h2{margin:0;font-size:17px;flex:1}
+  .help .hbody{padding:6px 20px 20px;font-size:14px;line-height:1.55}
+  .help h3{margin:18px 0 6px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  .help p{margin:0 0 8px} .help ul,.help ol{margin:0 0 8px;padding-left:22px} .help li{margin:3px 0}
+  .help .flow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0 10px;font-size:13px}
+  .help .flow span{background:var(--chip);border-radius:6px;padding:2px 8px}
+  .help .flow i{font-style:normal;color:var(--muted)}
+  .help pre{background:var(--chip);padding:10px 12px;border-radius:8px;overflow-x:auto;font-size:12.5px;margin:0 0 8px;
+            font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .help kbd{font:12px ui-monospace,Menlo,monospace;border:1px solid var(--border);border-bottom-width:2px;border-radius:5px;
+            padding:0 5px;background:var(--bg)}
+
   /* ---- quick add ---- */
   .add{display:flex;gap:10px;padding:14px 20px 0;align-items:center}
   .add input{flex:1;font:inherit;padding:11px 14px;border:1px solid var(--border);border-radius:10px;
@@ -105,6 +127,8 @@
   .tag.ask{color:var(--crit);font-weight:600}
   .tag.ok{color:var(--good);font-weight:600}
   .tag.run{color:var(--claude);font-weight:600}
+  .tag.warn{color:color-mix(in srgb,var(--warn) 55%,var(--text));font-weight:600}
+  .colhead .undeployed{margin-left:auto;font-size:11.5px;font-weight:600;color:color-mix(in srgb,var(--warn) 55%,var(--text))}
   .spin{display:inline-block;width:10px;height:10px;border:2px solid var(--claude);border-right-color:transparent;
         border-radius:50%;animation:spin .9s linear infinite;vertical-align:-1px}
   @keyframes spin{to{transform:rotate(360deg)}}
@@ -114,10 +138,46 @@
   .more{appearance:none;background:none;border:0;color:var(--accent);cursor:pointer;font-size:12.5px;padding:6px}
 
   /* ---- detail drawer ---- */
-  .drawer{position:fixed;top:0;right:0;bottom:0;width:min(640px,100vw);background:var(--card);
+  :root{--dw:min(var(--dw-user,640px),100vw)}
+  .drawer{position:fixed;top:0;right:0;bottom:0;width:var(--dw);background:var(--card);
           border-left:1px solid var(--border);box-shadow:-8px 0 30px rgba(0,0,0,.18);transform:translateX(102%);
           transition:transform .22s ease;display:flex;flex-direction:column;z-index:20}
   .drawer.open{transform:none}
+  /* the detail can also open on the left or as a full-screen modal; the choice is remembered */
+  .drawer[data-layout="left"]{right:auto;left:0;border-left:0;border-right:1px solid var(--border);
+          box-shadow:8px 0 30px rgba(0,0,0,.18);transform:translateX(-102%)}
+  .drawer[data-layout="modal"]{left:0;width:auto;border-left:0;box-shadow:none;transform:translateY(14px);
+          opacity:0;visibility:hidden;transition:transform .2s ease,opacity .2s ease,visibility .2s}
+  .drawer[data-layout].open{transform:none;opacity:1;visibility:visible}
+  .drawer[data-layout="modal"] > :is(.dhead,.dmeta,.acts,.dbody,.dreply,.foot){
+          padding-left:max(18px,calc((100% - 980px) / 2));padding-right:max(18px,calc((100% - 980px) / 2))}
+  .drawer[data-layout="modal"] .log{max-height:55vh}
+  /* drag the inner edge of a side panel to set its width (remembered) */
+  .grip{position:absolute;top:0;bottom:0;left:-4px;width:9px;cursor:col-resize;z-index:1;touch-action:none}
+  .grip::after{content:"";position:absolute;top:50%;left:3px;width:3px;height:44px;margin-top:-22px;border-radius:3px;
+               background:var(--border);opacity:0;transition:opacity .15s}
+  .grip:hover::after,html.resizing .grip::after{opacity:1;background:var(--accent)}
+  .drawer[data-layout="left"] .grip{left:auto;right:-4px}
+  .drawer[data-layout="modal"] .grip{display:none}
+  html.resizing,html.resizing *{cursor:col-resize!important;user-select:none!important}
+  html.resizing body,html.resizing .drawer{transition:none!important}
+  .layout{display:flex;gap:2px;margin-top:1px}
+  .layout button{appearance:none;border:1px solid transparent;background:none;border-radius:6px;padding:3px 5px;
+                 cursor:pointer;color:var(--muted);display:flex}
+  .layout button:hover{background:var(--chip);color:var(--text)}
+  .layout button[aria-pressed="true"]{color:var(--accent);border-color:var(--border);background:var(--chip)}
+  .layout svg{width:18px;height:18px}
+  .layout .sep{width:1px;background:var(--border);margin:3px 4px}
+  .drawer[data-layout="modal"] .layout .pin,.drawer[data-layout="modal"] .layout .sep{display:none}
+  /* docked: the panel pushes the board aside instead of covering it */
+  @media (min-width:861px){
+    body{transition:padding .22s ease}
+    html:is(.dock-left,.dock-right){--dw:min(var(--dw-user,640px),calc(100vw - 320px))}
+    html.dock-right body{padding-right:var(--dw)}
+    html.dock-left body{padding-left:var(--dw)}
+    html:is(.dock-left,.dock-right) .scrim{display:none}
+    html:is(.dock-left,.dock-right) .drawer{box-shadow:none}
+  }
   .scrim{position:fixed;inset:0;background:rgba(0,0,0,.25);opacity:0;pointer-events:none;transition:opacity .2s;z-index:19}
   .scrim.open{opacity:1;pointer-events:auto}
   .dhead{padding:14px 18px 10px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:flex-start}
@@ -129,7 +189,17 @@
   .dmeta select,.dmeta input{font:inherit;font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid var(--border);
                              background:var(--card);color:var(--text)}
   .dmeta input.verify{flex:1;min-width:160px;font-family:ui-monospace,Menlo,monospace;font-size:12px}
-  .acts{display:flex;gap:8px;flex-wrap:wrap;padding:12px 18px 0}
+  .acts{display:flex;gap:8px;flex-wrap:wrap;padding:12px 18px 0;align-items:center}
+  .acts .state{flex-basis:100%;margin:0 0 2px}
+  .codeline{margin-top:3px;font-size:12.5px;color:var(--text2)}
+  .codeline code{font-size:12px}
+  .codeline .edit{padding:0 4px}
+  details.more{position:relative}
+  details.more summary{list-style:none;font-weight:700;letter-spacing:1px}
+  details.more summary::-webkit-details-marker{display:none}
+  details.more .menu{position:absolute;left:0;top:calc(100% + 4px);z-index:5;display:flex;flex-direction:column;gap:4px;
+                     padding:6px;background:var(--card);border:1px solid var(--border);border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,.12);min-width:180px}
+  details.more .menu .btn{justify-content:flex-start;border-color:transparent;white-space:nowrap;text-align:left}
   .btn{appearance:none;border:1px solid var(--border);background:var(--card);border-radius:8px;padding:7px 12px;
        cursor:pointer;font-size:13.5px;display:inline-flex;align-items:center;gap:6px;text-decoration:none;color:var(--text)}
   .btn:hover{background:var(--chip)}
@@ -156,10 +226,35 @@
   .sec.run{color:var(--text2);font-size:13px}
   .sec.run .md{font-size:13px}
   .sec.verify,.sec.error{border-left:3px solid var(--crit);padding-left:12px}
+  /* what is going on with the task and what the owner can do about it */
+  .state{margin-top:14px;padding:10px 12px;border-radius:9px;background:var(--chip);font-size:13.5px;line-height:1.5}
+  .state b{font-weight:600}
+  .state.ask{background:color-mix(in srgb,var(--warn) 16%,var(--card))}
+  .state.bad{background:color-mix(in srgb,var(--crit) 12%,var(--card))}
+  .state.ok{background:color-mix(in srgb,var(--good) 12%,var(--card))}
+  .state.run{background:color-mix(in srgb,var(--claude) 12%,var(--card))}
+  .code{margin-top:10px;padding:8px 12px;border:1px solid var(--border);border-radius:9px;font-size:13px;line-height:1.5}
+  .code .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .code ul{margin:6px 0 0;padding:0;list-style:none;font-size:12.5px;color:var(--text2)}
+  .code li{overflow-wrap:anywhere}
+  .code code{font-size:12px}
+  .code .when{color:var(--muted);font-size:12px}
+  .code button.edit{margin-left:auto}
+  details.sec.old{margin-top:10px;color:var(--text2)}
+  details.sec.old summary{cursor:pointer;font-size:12.5px;color:var(--muted);list-style:none}
+  details.sec.old summary::-webkit-details-marker{display:none}
+  details.sec.old summary::before{content:"▸ ";display:inline-block;width:1em}
+  details.sec.old[open] summary::before{content:"▾ "}
+  details.sec.old.hist > .sec{margin:10px 0 0 12px;opacity:.85}
+  details.sec.old .md{margin-top:6px;padding-left:12px;border-left:3px solid var(--border);font-size:13px}
   textarea{width:100%;font:inherit;font-size:14px;padding:10px 12px;border:1px solid var(--border);border-radius:9px;
            background:var(--bg);color:var(--text);resize:vertical;min-height:84px}
   textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
-  .reply{margin-top:10px;display:flex;flex-direction:column;gap:8px}
+  .reply{display:flex;flex-direction:column;gap:8px}
+  /* the reply box stays at the bottom of the panel while the text above scrolls */
+  .dreply{border-top:1px solid var(--border);padding:10px 18px 12px;background:var(--card)}
+  .dreply:empty{display:none}
+  .dreply textarea{min-height:72px;max-height:40vh}
   .reply .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .reply .note{font-size:12.5px;color:var(--muted);flex:1}
   .log{background:#0d0d0d;color:#d7d7d0;font:12px/1.45 ui-monospace,Menlo,monospace;padding:10px 12px;border-radius:8px;
@@ -186,6 +281,7 @@
     .colhead{display:none}
     .card[draggable="true"]{cursor:pointer}
     .drawer{width:100vw}
+    .layout,.grip{display:none}
     .dbody{padding-bottom:40px}
   }
 </style>
@@ -201,7 +297,58 @@
     <button class="sw" id="auto" type="button" role="switch" aria-checked="false" aria-label="automatická fronta"></button>
   </label>
   <span class="live" id="live"><span class="dot"></span><span id="live-txt">…</span></span>
+  <button class="helpbtn" id="help-btn" type="button" title="Jak board funguje (klávesa ?)">? Nápověda</button>
 </header>
+
+<dialog class="help" id="help" aria-labelledby="help-title">
+  <div class="hhead"><h2 id="help-title">Jak to funguje</h2><button class="close" id="help-close" aria-label="zavřít">×</button></div>
+  <div class="hbody">
+    <p>Každý úkol je jeden markdown soubor v <code>tasks/</code> projektu. Web, terminál i agent čtou a doplňují tentýž soubor.
+      Nic se v něm nepřepisuje, jen se připisují sekce (plán, otázky, odpovědi, výsledek), takže je to zároveň historie úkolu.</p>
+
+    <h3>Cesta úkolu</h3>
+    <div class="flow"><span>Triage</span><i>→</i><span>Čeká na mě: plán</span><i>→</i><span>Fronta</span><i>→</i><span>Běží</span><i>→</i><span>Čeká na mě: výsledek</span><i>→</i><span>Hotovo</span></div>
+    <ol>
+      <li><b>Založ úkol</b> do pole nahoře (nebo z Telegramu: <code>úkol &lt;projekt&gt; …</code>). První věta je název, zbytek zadání.</li>
+      <li><b>Triage:</b> agent si projde kód a napíše plán, případně otázky. Na kód nesahá.</li>
+      <li><b>Čeká na mě:</b> odpověz na otázky (agent plán přepracuje), nebo plán rovnou <b>schval do Fronty</b>.</li>
+      <li><b>Fronta:</b> pořadí určuješ přetažením. <b>Implementovat teď</b> spustí úkol hned; se zapnutým <b>Fronta běží sama</b> si agent bere další úkol sám. V projektu běží vždy jen jedna implementace.</li>
+      <li><b>Běží:</b> agent implementuje a commituje. Průběh je v logu nebo přes <b>Sledovat v terminálu</b>.</li>
+      <li><b>Kontrola:</b> <b>🚀 Schválit a nasadit</b> úkol uzavře a pošle na produkci jen jeho commity. <b>✓ Jen schválit</b> ho uzavře bez nasazení (nasadíš později tlačítkem <b>🚀 Nasadit</b>). <b>↩ Vrátit k opravě</b> ho pošle agentovi zpět.</li>
+      <li><b>Nasazení:</b> štítek ukazuje, kde je kód: <i>● jen lokálně</i>, <i>⬆ nenasazeno</i>, <i>✓ nasazeno</i>. Celou větev ručně nepushuj, odešly by s ní i neschválené úkoly.</li>
+    </ol>
+    <p>Po implementaci se spustí ověřovací příkaz <b>verify</b> (testy, build). Když neprojde, úkol čeká na tebe.
+      Je-li chybný samotný příkaz, oprav ho v poli verify a dej <b>Ověřit znovu</b>. Pustí se jen příkaz, bez agenta.
+      V detailu úkolu je nahoře vždy barevný pruh, který říká, v jakém stavu úkol je a co máš udělat dál.</p>
+
+    <h3>Claude úkolu: diskuse a práce z terminálu</h3>
+    <p>Ke každému novému úkolu se založí vlastní Claude session pojmenovaná <code>číslo · název</code>. Najdeš ji v detailu úkolu pod
+      <b>▸ Claude úkolu</b> a na rozcestníku mezi sezeními Claude. Když ji zavřeš, tlačítko ji znovu otevře i s celou konverzací.</p>
+    <ul>
+      <li><b>Diskuse:</b> ptej se, upřesňuj, měň zadání. Na co se domluvíte, to Claude zapíše do úkolu (odpovědi nebo nový plán) a hned to vidíš i tady.</li>
+      <li><b>Realizace v terminálu:</b> řekni mu „udělej to tady“. Úkol se přesune do <b>Běží</b> se štítkem <i>v terminálu</i>, po dokončení přijde výsledek a úkol jde ke kontrole. <b>↩ Uvolnit</b> ho vrátí do backlogu.</li>
+      <li><b>Realizace z webu</b> funguje dál stejně (Implementovat teď, Fronta) a agent při ní vychází i z toho, co jste domluvili v terminálu.</li>
+      <li>Co napíšeš tady (odpovědi, připomínky), si Claude v terminálu přečte, než ti odpoví.</li>
+    </ul>
+    <p>Úkol jde ovládat i ručně z libovolného terminálu. V session úkolu se číslo úkolu doplní samo, jinde napiš <code>projekt/číslo</code>:</p>
+<pre>fractal-task show                  stav a celý úkol
+fractal-task answers "…"           připsat odpovědi (také plan, questions, feedback, result)
+fractal-task approve | run | triage | move todo
+fractal-task claim | finish | release    práce v terminálu: začít / hotovo / vzdát</pre>
+
+    <h3>Detail úkolu</h3>
+    <ul>
+      <li>Ikonky vpravo nahoře: panel <b>vlevo</b>, <b>vpravo</b>, <b>ukotvený</b> (odsune board místo překrytí) nebo <b>přes celou obrazovku</b>.</li>
+      <li>Šířku panelu změníš tažením za jeho vnitřní okraj, dvojklik vrátí výchozí šířku. Nastavení si pamatuje tenhle prohlížeč.</li>
+      <li>Pole na odpověď je pevně dole a text nad ním můžeš posouvat. Rozepsaná odpověď vydrží i živé aktualizace.</li>
+      <li>Platí vždy jen nejnovější plán. Starší verze plánu a záznamy o bězích agenta jsou sbalené, rozbalíš je kliknutím.</li>
+      <li>Název úkolu přepíšeš kliknutím. Zadání upravíš přes <b>upravit</b>.</li>
+    </ul>
+
+    <h3>Klávesy</h3>
+    <p><kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> odešle odpověď · <kbd>Esc</kbd> zavře detail · <kbd>Enter</kbd> na kartě ji otevře · <kbd>?</kbd> tahle nápověda</p>
+  </div>
+</dialog>
 
 <form class="add" id="add" autocomplete="off">
   <input id="add-in" placeholder="Nový úkol: napiš nebo nadiktuj, Enter založí (agent hned připraví plán)" maxlength="4000">
@@ -215,14 +362,24 @@
 
 <div class="scrim" id="scrim"></div>
 <aside class="drawer" id="drawer" aria-label="Detail úkolu">
+  <div class="grip" id="d-grip" title="Táhni pro šířku panelu, dvojklik vrátí výchozí"></div>
   <div class="dhead">
     <span class="id" id="d-id"></span>
     <h2 id="d-title" contenteditable="true" spellcheck="false" title="Klikni a přepiš název; Enter uloží"></h2>
+    <span class="layout" id="d-layout" role="group" aria-label="Rozložení detailu">
+      <button type="button" data-layout="left" title="Panel vlevo"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="15" height="13" rx="2"/><rect x="1.5" y="2.5" width="6" height="13" rx="2" fill="currentColor"/></svg></button>
+      <button type="button" data-layout="right" title="Panel vpravo"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="15" height="13" rx="2"/><rect x="10.5" y="2.5" width="6" height="13" rx="2" fill="currentColor"/></svg></button>
+      <span class="sep"></span>
+      <button type="button" class="pin" id="d-pin" title="Panel odsune obsah místo překrytí"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="15" height="13" rx="2"/><path d="M9 2.5v13M6.5 7 4.5 9l2 2M11.5 7l2 2-2 2"/></svg></button>
+      <span class="sep"></span>
+      <button type="button" data-layout="modal" title="Přes celou obrazovku"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="15" height="13" rx="2"/><rect x="4" y="5" width="10" height="8" rx="1" fill="currentColor"/></svg></button>
+    </span>
     <button class="close" id="d-close" aria-label="zavřít">×</button>
   </div>
   <div class="dmeta" id="d-meta"></div>
   <div class="acts" id="d-acts"></div>
   <div class="dbody" id="d-body"></div>
+  <div class="dreply" id="d-reply"></div>
   <div class="foot" id="d-foot"></div>
 </aside>
 
@@ -230,7 +387,8 @@
 /* The board is a view over markdown files in <project>/tasks/. Everything
    here calls fractal-tasks (/tasks/, tailnet only) and re-renders on its
    server-sent events; there is no local state worth keeping except the
-   chosen project and the open task (both in the URL hash). */
+   chosen project and the open task (both in the URL hash) and how the
+   detail opens (localStorage, per browser). */
 const API = "/tasks";
 const COLUMNS = [
   {key: "triage",   label: "Triage",     ic: "◔", statuses: ["triage"],                     drop: true,
@@ -249,7 +407,7 @@ const COLUMNS = [
 const STATUS_CS = {triage: "triage", backlog: "backlog", todo: "ve frontě", "in-progress": "běží",
                    "need-attention": "čeká na odpověď", review: "ke schválení", done: "hotovo", canceled: "zrušeno"};
 const KIND_CS = {Plan: "Plán", Questions: "Otázky", Answers: "Odpovědi", Feedback: "Připomínky",
-                 Result: "Výsledek", Run: "Běh", Verify: "Ověření selhalo", Error: "Chyba"};
+                 Result: "Výsledek", Run: "Běh", Verify: "Ověření selhalo", Error: "Chyba", Deploy: "Nasazení"};
 const PRI_CS = {1: "urgent", 2: "vysoká", 3: "normální", 4: "nízká"};
 
 let projects = [], current = null, tasks = [], openId = null, showAllDone = false, mobileCol = "waiting";
@@ -371,15 +529,33 @@ function openQuestions(t){
 function cardTags(t){
   const tags = [];
   if (t.run) tags.push(`<span class="tag run"><span class="spin"></span> ${t.status === "triage" ? "plánuje" : "pracuje"}</span>`);
+  else if (t.session?.driver) tags.push(`<span class="tag run">▸ v terminálu</span>`);
   else if (t.status === "triage" || t.status === "in-progress") tags.push(`<span class="tag">čeká na spuštění</span>`);
   if (t.status === "review") tags.push(`<span class="tag ok">${t.phase === "triage" ? "plán ke schválení" : "ke schválení"}</span>`);
   if (t.status === "need-attention") {
     const q = openQuestions(t);
     tags.push(`<span class="tag ask">${q ? (q === 1 ? "1 otázka" : q + " otázek") : "potřebuje zásah"}</span>`);
   }
+  if (t.deploy) tags.push(`<span class="tag run"><span class="spin"></span> nasazuje se</span>`);
+  else if (t.code && ["review", "done", "need-attention"].includes(t.status)) tags.push(codeTag(t.code));
   if (t.status === "canceled") tags.push(`<span class="tag">zrušeno</span>`);
   if (t.assignee && t.assignee !== "claude") tags.push(`<span class="tag">${esc(t.assignee)}</span>`);
   return tags.join("");
+}
+/* where the task's commits are: only here, pushed, on the production */
+const CODE_CS = {local: "jen lokálně", pushed: "nenasazeno", deployed: "nasazeno"};
+function codeTag(c){
+  if (c.state === "deployed") return `<span class="tag ok" title="Všechny commity úkolu jsou na produkci">✓ nasazeno</span>`;
+  if (c.state === "pushed") return c.tracked ? `<span class="tag warn" title="Pushnuto, ale na produkci ještě není">⬆ nenasazeno</span>`
+                                             : `<span class="tag" title="Pushnuto; nasazení se u projektu nesleduje">⬆ pushnuto</span>`;
+  return `<span class="tag warn" title="Commity jsou jen v lokálním repu – nepushnuté ani nenasazené">● jen lokálně</span>`;
+}
+function undeployed(t){ return t.status === "done" && t.code && t.code.state !== "deployed" && (t.code.tracked || t.code.state === "local"); }
+function codeLine(t){
+  const c = t.code; if (!c) return "";
+  const mark = x => x.deployed ? "✓ nasazeno" : x.pushed ? (c.tracked ? "⬆ pushnuto, nenasazeno" : "⬆ pushnuto") : "● jen lokálně";
+  return `<div class="codeline">${c.commits.map(x => `<span title="${esc(x.subject)}"><code>${esc(x.sha)}</code> ${mark(x)}</span>`).join(" · ")}`
+    + (c.tracked ? ` <button class="edit" id="d-deploy-check" title="${esc(c.error || ("produkce zjištěna " + (c.checked || "").slice(11)))}">↻</button>` : "") + `</div>`;
 }
 function card(t, pos){
   const col = COLUMNS.find(c => c.statuses.includes(t.status));
@@ -406,7 +582,7 @@ function renderBoard(){
     }
     if (c.key === "waiting") list.sort((a, b) => (a.status === "need-attention" ? 0 : 1) - (b.status === "need-attention" ? 0 : 1) || byOrder(a, b));
     return `<section class="column ${c.drop ? "" : "nodrop"} ${mobileCol === c.key ? "shown" : ""}" data-col="${c.key}">
-      <div class="colhead"><span class="ic">${c.ic}</span>${c.label}<span class="cnt">${list.length}</span></div>
+      <div class="colhead"><span class="ic">${c.ic}</span>${c.label}<span class="cnt">${list.length}</span>${c.key === "done" && tasks.filter(undeployed).length ? `<span class="undeployed" title="Hotové úkoly, jejichž kód ještě není na produkci">${tasks.filter(undeployed).length} nenasazeno</span>` : ""}</div>
       <div class="cards">
         ${list.map((t, i) => card(t, c.ordered ? i + 1 : 0)).join("") || `<div class="empty">${esc(c.hint || "—")}</div>`}
         ${hidden ? `<button class="more" data-more="1">+ ${hidden} starších a zrušených</button>` : ""}
@@ -478,11 +654,59 @@ function wireDnD(){
 }
 
 /* ---- detail ---- */
-function openDrawer(){ $("drawer").classList.add("open"); $("scrim").classList.add("open"); }
-function closeDrawer(){ $("drawer").classList.remove("open"); $("scrim").classList.remove("open"); openId = null; setHash(); stopLog(); }
+function openDrawer(){ $("drawer").classList.add("open"); $("scrim").classList.add("open"); syncDock(); }
+function closeDrawer(){ $("drawer").classList.remove("open"); $("scrim").classList.remove("open"); openId = null; setHash(); stopLog(); syncDock(); }
 $("scrim").addEventListener("click", closeDrawer);
+
+const LAYOUT_KEY = "fractal-tasks-layout", DOCK_KEY = "fractal-tasks-dock", LAYOUTS = ["right", "left", "modal"];
+let docked = false;
+function syncDock(){
+  const d = $("drawer"), l = d.dataset.layout, on = docked && l !== "modal" && d.classList.contains("open");
+  document.documentElement.classList.toggle("dock-left", on && l === "left");
+  document.documentElement.classList.toggle("dock-right", on && l === "right");
+  $("d-pin").setAttribute("aria-pressed", String(docked));
+}
+function setLayout(l, save){
+  if (!LAYOUTS.includes(l)) l = "right";
+  const d = $("drawer");
+  // switching sides of an open panel would animate it across the screen; jump instead
+  if (d.classList.contains("open")) { d.style.transition = "none"; requestAnimationFrame(() => requestAnimationFrame(() => d.style.transition = "")); }
+  d.dataset.layout = l;
+  d.setAttribute("aria-modal", String(l === "modal"));
+  $("d-layout").querySelectorAll("button[data-layout]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.layout === l)));
+  if (save) try { localStorage.setItem(LAYOUT_KEY, l); } catch (e) {}
+  syncDock();
+}
+$("d-layout").addEventListener("click", e => { const b = e.target.closest("button[data-layout]"); if (b) setLayout(b.dataset.layout, true); });
+$("d-pin").addEventListener("click", () => {
+  docked = !docked; syncDock();
+  try { localStorage.setItem(DOCK_KEY, docked ? "1" : "0"); } catch (e) {}
+});
+const WIDTH_KEY = "fractal-tasks-width";
+function setWidth(px, save){
+  const root = document.documentElement;
+  if (px) root.style.setProperty("--dw-user", Math.round(px) + "px"); else root.style.removeProperty("--dw-user");
+  if (save) try { if (px) localStorage.setItem(WIDTH_KEY, String(Math.round(px))); else localStorage.removeItem(WIDTH_KEY); } catch (e) {}
+}
+$("d-grip").addEventListener("pointerdown", e => {
+  e.preventDefault();
+  const grip = e.currentTarget, left = $("drawer").dataset.layout === "left";
+  grip.setPointerCapture(e.pointerId);
+  document.documentElement.classList.add("resizing");
+  const move = ev => setWidth(Math.max(360, Math.min(left ? ev.clientX : window.innerWidth - ev.clientX, window.innerWidth - 200)));
+  const up = () => {
+    grip.removeEventListener("pointermove", move); grip.removeEventListener("pointerup", up); grip.removeEventListener("pointercancel", up);
+    document.documentElement.classList.remove("resizing");
+    setWidth(parseInt(document.documentElement.style.getPropertyValue("--dw-user")) || 0, true);
+  };
+  grip.addEventListener("pointermove", move); grip.addEventListener("pointerup", up); grip.addEventListener("pointercancel", up);
+});
+$("d-grip").addEventListener("dblclick", () => setWidth(0, true));
+try { setWidth(Number(localStorage.getItem(WIDTH_KEY)) || 0); } catch (e) {}
+let savedLayout = null; try { savedLayout = localStorage.getItem(LAYOUT_KEY); docked = localStorage.getItem(DOCK_KEY) === "1"; } catch (e) {}
+setLayout(savedLayout);
 $("d-close").addEventListener("click", closeDrawer);
-document.addEventListener("keydown", e => { if (e.key === "Escape" && openId) closeDrawer(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && openId && !e.target.matches("textarea") && !$("help").open) closeDrawer(); });
 
 function setHash(){ const h = current ? "#" + current + (openId ? "/" + openId : "") : ""; if (location.hash !== h) history.replaceState(null, "", h || location.pathname); }
 function readHash(){ const m = location.hash.match(/^#([a-z0-9-]+)(?:\/([A-Za-z0-9_.-]+))?$/); if (m) { current = m[1]; openId = m[2] || null; } }
@@ -493,7 +717,11 @@ async function act(method, path, body, after){
 }
 function renderDetail(){
   const t = tasks.find(x => x.id === openId);
-  if (!t) { $("d-body").innerHTML = `<div class="empty">Úkol ${esc(openId)} tu není.</div>`; $("d-acts").innerHTML = ""; $("d-meta").innerHTML = ""; return; }
+  if (!t) {
+    $("d-body").innerHTML = `<div class="empty">Úkol ${esc(openId)} tu není.</div>`; $("d-body").dataset.task = "";
+    $("d-reply").innerHTML = ""; $("d-reply").dataset.html = "";
+    $("d-acts").innerHTML = ""; $("d-meta").innerHTML = ""; return;
+  }
   $("d-id").textContent = t.id;
   const h = $("d-title"); if (document.activeElement !== h) h.textContent = t.title;
   h.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); h.blur(); } if (e.key === "Escape") { h.textContent = t.title; h.blur(); } };
@@ -509,50 +737,139 @@ function renderDetail(){
   $("d-verify").onblur = e => { if (e.target.value.trim() !== (t.verify || "")) act("PATCH", `/${current}/tasks/${t.id}`, {verify: e.target.value.trim()}); };
   $("d-verify").onkeydown = e => { if (e.key === "Enter") e.target.blur(); };
 
-  const B = (label, cls, fn, title) => { const id = "b" + Math.random().toString(36).slice(2, 8); setTimeout(() => { const el = $(id); if (el) el.onclick = fn; }); return `<button class="btn ${cls || ""}" id="${id}" ${title ? `title="${esc(title)}"` : ""}>${label}</button>`; };
-  const acts = [];
+  let bn = 0;      // stable ids: the same state renders the same markup, and an open menu survives
+  const B = (label, cls, fn, title) => { const id = "b" + bn++; setTimeout(() => { const el = $(id); if (el) el.onclick = fn; }); return `<button class="btn ${cls || ""}" id="${id}" ${title ? `title="${esc(title)}"` : ""}>${label}</button>`; };
   const P = `/${current}/tasks/${t.id}`;
-  if (running) {
-    acts.push(B("■ Zastavit", "danger", () => confirm("Ukončit běžící session agenta?") && act("POST", P + "/stop")));
-    acts.push(`<a class="btn" href="/term/?arg=pane:${esc(String(t.run.pane).replace("%", ""))}" target="term-${esc(current)}" rel="noopener">▸ Sledovat v terminálu</a>`);
+  const link = (label, pane, cls) => `<a class="btn ${cls || ""}" href="/term/?arg=pane:${esc(String(pane).replace("%", ""))}" target="term-${esc(current)}" rel="noopener">${label}</a>`;
+  const canDeploy = !!(projects.find(x => x.name === current)?.settings?.deploy && t.code && t.code.state !== "deployed");
+  const deploy = (ids, approve) => {
+    const list = ids.map(i => tasks.find(x => x.id === i)).filter(Boolean);
+    const shas = list.flatMap(x => (x.code?.commits || []).filter(c => !c.deployed).map(c => c.sha));
+    if (!confirm(`${approve ? "Schválit a nasadit" : "Nasadit"} ${ids.length > 1 ? "úkoly " + ids.join(" + ") : "úkol " + t.id} (${shas.join(", ")})?\nNa produkci půjde jen tohle.`)) return;
+    (approve ? api("POST", P + "/approve") : Promise.resolve())
+      .then(() => api("POST", P + "/deploy", {with: ids.slice(1)})).catch(e => showErr(e.message)).then(loadTasks);
+  };
+  // the next step, big; everything else under "⋯"
+  const main = [], more = [];
+  const q = openQuestions(t), k = lastKind(t);
+  if (t.run) {
+    main.push(link("▸ Sledovat", t.run.pane));
+    more.push(B("■ Zastavit agenta", "danger", () => confirm("Zastavit agenta?") && act("POST", P + "/stop")));
+  } else if (t.deploy) {
+    main.push(link("▸ Sledovat nasazení", t.deploy.pane));
+  } else if (t.session?.driver) {
+    more.push(B("↩ Uvolnit", "", () => act("POST", P + "/release"), "Vrátí úkol do backlogu"));
   } else {
-    if (t.status === "review" && t.phase === "triage") acts.push(B("✓ Schválit plán → Fronta", "primary", () => act("POST", P + "/approve")));
-    if (t.status === "review" && t.phase !== "triage") acts.push(B("✓ Hotovo", "primary", () => act("POST", P + "/approve")));
-    if (["backlog", "todo", "need-attention", "review"].includes(t.status) && t.status !== "in-progress")
-      acts.push(B("▶ Implementovat teď", t.status === "todo" ? "good" : "", () => act("POST", P + "/run"),
-                  "Spustí agenta hned, bez ohledu na pořadí ve frontě"));
-    if (["backlog", "todo", "need-attention", "review", "done", "canceled"].includes(t.status))
-      acts.push(B("◔ Triage znovu", "", () => act("POST", P + "/triage"), "Agent znovu projde kód a napíše plán"));
-    if (["backlog", "need-attention", "review"].includes(t.status)) acts.push(B("≡ Do fronty", "", () => act("POST", P + "/move", {status: "todo"})));
-    if (["todo", "need-attention", "review"].includes(t.status)) acts.push(B("▫ Do backlogu", "", () => act("POST", P + "/move", {status: "backlog"})));
-    if (!["done", "canceled"].includes(t.status)) acts.push(B("✕ Zrušit", "danger", () => act("PATCH", P, {status: "canceled"})));
-    if (["done", "canceled"].includes(t.status)) {
-      acts.push(B("↺ Znovu otevřít", "", () => act("POST", P + "/move", {status: "backlog"})));
-      acts.push(B("⌸ Archivovat", "", () => act("POST", P + "/archive", {}, closeDrawer), "Přesune soubor do tasks/archive/"));
+    switch (t.status) {
+      case "review":
+        if (t.phase === "triage") main.push(B("✓ Schválit plán", "primary", () => act("POST", P + "/approve"), "Úkol jde do fronty k implementaci"));
+        else if (canDeploy) {
+          main.push(B("🚀 Schválit a nasadit", "primary", () => deploy([t.id], true)));
+          main.push(B("✓ Jen schválit", "", () => act("POST", P + "/approve"), "Do Hotovo, nasadit později"));
+        } else main.push(B("✓ Schválit", "primary", () => act("POST", P + "/approve")));
+        break;
+      case "need-attention":
+        if (k === "Verify" && t.phase !== "triage") {
+          main.push(B("↻ Ověřit znovu", "primary", () => act("POST", P + "/verify"), "Spustí jen příkaz verify"));
+          main.push(B("✓ Přesto schválit", "", () => act("POST", P + "/approve")));
+        } else if (!(k === "Questions" || q))
+          main.push(B("▶ Spustit znovu", "primary", () => act("POST", P + (t.phase === "triage" ? "/triage" : "/run"))));
+        break;
+      case "backlog": case "todo":
+        main.push(B("▶ Implementovat teď", "primary", () => act("POST", P + "/run")));
+        break;
+      case "done":
+        if (canDeploy) {
+          main.push(B("🚀 Nasadit", "primary", () => deploy([t.id])));
+          const d = lastDeploy(t), need = (d?.depends || []).filter(i => i !== t.id);
+          if (need.length && need.every(i => tasks.find(x => x.id === i)?.status === "done"))
+            main.push(B(`🚀 Nasadit spolu s ${need.join(", ")}`, "", () => deploy([t.id, ...need])));
+        } else main.push(B("⌸ Archivovat", "", () => act("POST", P + "/archive", {}, closeDrawer)));
+        break;
     }
+    if (["review", "need-attention"].includes(t.status) && t.phase !== "triage")
+      more.push(B("▶ Implementovat znovu", "", () => act("POST", P + "/run")));
+    if (!["triage", "in-progress"].includes(t.status)) more.push(B("◔ Nový plán", "", () => act("POST", P + "/triage"), "Agent znovu projde kód a napíše plán"));
+    if (["backlog", "need-attention", "review"].includes(t.status)) more.push(B("≡ Do fronty", "", () => act("POST", P + "/move", {status: "todo"})));
+    if (["todo", "need-attention", "review"].includes(t.status)) more.push(B("▫ Odložit", "", () => act("POST", P + "/move", {status: "backlog"})));
+    if (["done", "canceled"].includes(t.status)) {
+      more.push(B("↺ Znovu otevřít", "", () => act("POST", P + "/move", {status: "backlog"})));
+      if (canDeploy) more.push(B("⌸ Archivovat", "", () => act("POST", P + "/archive", {}, closeDrawer)));
+    }
+    if (!["done", "canceled"].includes(t.status)) more.push(B("✕ Zrušit úkol", "danger", () => confirm("Zrušit úkol?") && act("PATCH", P, {status: "canceled"})));
   }
-  $("d-acts").innerHTML = acts.join("");
+  // the task's own Claude: the whole conversation, runs included (closed while one works)
+  const s = t.session;
+  if (!t.run) main.push(B("▸ Claude úkolu", "", () => openSession(t), "Konverzace s agentem úkolu: celý jeho běh, příkazy a výstupy; můžeš se ptát a pokračovat"));
+  const st = situation(t), code = codeLine(t);
+  const acts = (st || code ? `<div class="state ${st?.tone || ""}">${st ? st.html : ""}${code}</div>` : "")
+    + main.join("") + (more.length ? `<details class="more"><summary class="btn" title="Další akce">⋯</summary><div class="menu">${more.join("")}</div></details>` : "");
+  if ($("d-acts").dataset.html !== acts || $("d-acts").dataset.task !== t.id) {
+    $("d-acts").innerHTML = acts; $("d-acts").dataset.html = acts; $("d-acts").dataset.task = t.id;
+  }
+  const dc = $("d-deploy-check");
+  if (dc) dc.onclick = () => { dc.disabled = true; act("POST", `/${current}/deploy-check`); };
 
   // body: request (editable), then the appended sections in order, then reply boxes, then the log
   const parts = [];
   parts.push(`<div class="sec request"><h3>Zadání <button class="edit" id="d-edit">upravit</button></h3>
     <div class="md" id="d-req">${md(t.request)}</div></div>`);
-  for (const s of t.sections || []) {
-    const kind = s.kind.toLowerCase();
-    parts.push(`<div class="sec ${kind}"><h3>${esc(KIND_CS[s.kind] || s.kind)} <span class="who">${esc(s.head)}</span></h3><div class="md">${md(s.text)}</div></div>`);
-  }
-  const needsAnswer = t.status === "need-attention" || (t.status === "review" && t.phase === "triage" && openQuestions(t) > 0);
-  if (!running && needsAnswer) {
-    parts.push(`<div class="reply"><textarea id="d-answer" placeholder="${t.phase === "triage" ? "Odpovědi na otázky agenta (očíslovaně) – agent plán přepracuje" : "Odpověď agentovi – úkol se vrátí na začátek fronty"}"></textarea>
-      <div class="row"><button class="btn primary" id="d-answer-btn">↩ Odpovědět</button>
-      <span class="note">${t.phase === "triage" ? "Bez odpovědí lze plán rovnou schválit do fronty, agent se pak rozhodne sám." : "Nebo vrať úkol do fronty bez odpovědi tlačítkem Do fronty."}</span></div></div>`);
-  }
-  if (!running && t.status === "review" && t.phase !== "triage") {
-    parts.push(`<div class="reply"><textarea id="d-reject" placeholder="Co má agent změnit – úkol se vrátí na začátek fronty s těmito připomínkami"></textarea>
-      <div class="row"><button class="btn" id="d-reject-btn">↩ Vrátit s připomínkami</button></div></div>`);
-  }
+  // what counts now is the newest plan and what came after it: everything
+  // before it was folded into that plan and goes into one History fold; the
+  // runner's records and a failed verify that is no longer the point fold too
+  const secs = t.sections || [], lastPlan = secs.map(x => x.kind).lastIndexOf("Plan");
+  const lastSay = secs.map(x => x.kind !== "Run").lastIndexOf(true);
+  const card = s => `<div class="sec ${s.kind.toLowerCase()}"><h3>${esc(KIND_CS[s.kind] || s.kind)} <span class="who">${esc(s.head)}</span></h3><div class="md">${md(s.text)}</div></div>`;
+  const fold = (what, s) => `<details class="sec old"><summary>${what} <span class="who">${esc(s.head)}</span></summary><div class="md">${md(s.text)}</div></details>`;
+  if (lastPlan > 0) parts.push(`<details class="sec old hist"><summary>Historie: ${lastPlan} ${lastPlan < 5 ? "záznamy" : "záznamů"} před aktuálním plánem (${esc([...new Set(secs.slice(0, lastPlan).map(x => (KIND_CS[x.kind] || x.kind).toLowerCase()))].join(", "))})</summary>`
+    + secs.slice(0, lastPlan).map(s => s.kind === "Run" ? fold("Běh agenta " + esc(runSummary(s.text)), s) : card(s)).join("") + `</details>`);
+  // once there is a result the plan is background: the result is what to check
+  const done = secs.some((x, i) => i > lastPlan && x.kind === "Result");
+  secs.forEach((s, i) => {
+    if (i < lastPlan) return;
+    if (s.kind === "Plan" && done) parts.push(fold("Plán, podle kterého agent pracoval", s));
+    else if (s.kind === "Deploy" && !(i === lastSay && !/^\s*-\s*outcome:\s*(deployed|dry run)/mi.test(s.text))) parts.push(fold("Nasazení " + esc(runSummary(s.text)), s));
+    else if (s.kind === "Run") parts.push(fold("Běh agenta " + esc(runSummary(s.text)), s));
+    else if (s.kind === "Verify" && !(i === lastSay && t.status === "need-attention")) parts.push(fold("Dřívější neúspěšné ověření", s));
+    else parts.push(card(s));
+  });
   parts.push(`<div class="sec log-sec"><h3>Log posledního běhu ${running ? '<span class="spin"></span>' : ""} <button class="edit" id="d-log-btn">${running ? "živě" : "zobrazit"}</button></h3><pre class="log" id="d-log" hidden></pre></div>`);
-  $("d-body").innerHTML = parts.join("");
+
+  // the reply box: always there while the task is open; during a run it adds
+  // a note the agent gets after its next step. What sending does depends on where the task is
+  let form = null;
+  const triageWait = t.phase === "triage" && ["review", "need-attention"].includes(t.status);
+  if (running) form = {draft: "note", path: "/note", extra: {kind: "Answers", who: "owner"}, label: "＋ Připsat",
+    ph: "Připomínka – agent ji dostane hned po dalším kroku"};
+  else if (["done", "canceled"].includes(t.status)) form = null;
+  else if (triageWait) form = {draft: "answer", path: "/answer", label: "↩ Odpovědět", primary: openQuestions(t) > 0,
+    ph: openQuestions(t) ? "Odpovědi na otázky agenta" : "Připomínky k plánu",
+    note: ""};
+  else if (t.status === "need-attention") form = {draft: "answer", path: "/answer", label: "↩ Odpovědět", primary: true,
+    ph: "Odpověď agentovi", note: ""};
+  else if (t.status === "review") form = {draft: "reject", path: "/reject", label: "↩ Vrátit k opravě",
+    ph: "Co má agent opravit", note: ""};
+  else form = {draft: "note", path: "/note", extra: {kind: "Answers", who: "owner"}, label: "＋ Připsat",
+    ph: "Poznámka pro agenta", note: ""};
+  let reply = "";
+  if (form) reply = `<div class="reply"><textarea id="d-reply-ta" data-draft="${form.draft}" placeholder="${esc(form.ph)}"></textarea>
+      <div class="row"><button class="btn ${form.primary ? "primary" : ""}" id="d-reply-btn" title="Ctrl+Enter">${form.label}</button>
+      </div></div>`;
+
+  // live updates re-render the detail often: touch the DOM only when the markup
+  // changed, so scroll position, an open log and half-written text survive
+  const body = $("d-body"), html = parts.join(""), same = body.dataset.task === t.id;
+  if (!same || body.dataset.html !== html) {
+    const top = body.scrollTop;
+    body.innerHTML = html; body.dataset.html = html; body.dataset.task = t.id;
+    body.scrollTop = same ? top : 0;
+    if (running) { $("d-log").hidden = false; startLog(t.id); }
+  }
+  const rbox = $("d-reply"), rkey = reply ? `${current}/${t.id}` : "";
+  if (rbox.dataset.html !== reply || rbox.dataset.key !== rkey) {
+    rbox.innerHTML = reply; rbox.dataset.html = reply; rbox.dataset.key = rkey;
+    rbox.querySelectorAll("textarea[data-draft]").forEach(ta => ta.value = drafts[rkey + "/" + ta.dataset.draft] || "");
+  }
   $("d-foot").innerHTML = `<code>tasks/${esc(t.file)}</code> · aktualizováno ${esc(t.updated || "")} · <a class="term" href="/term/?arg=${esc(current)}" target="term-${esc(current)}" rel="noopener">terminál projektu</a>`;
 
   $("d-edit").onclick = () => {
@@ -563,10 +880,91 @@ function renderDetail(){
     $("d-req-cancel").onclick = renderDetail;
     $("d-req-ta").focus();
   };
-  const ab = $("d-answer-btn"); if (ab) ab.onclick = () => { const v = $("d-answer").value.trim(); if (v) act("POST", P + "/answer", {text: v}); };
-  const rb = $("d-reject-btn"); if (rb) rb.onclick = () => { const v = $("d-reject").value.trim(); if (v) act("POST", P + "/reject", {text: v}); };
+  const rbtn = $("d-reply-btn");
+  if (rbtn) rbtn.onclick = () => {
+    const ta = $("d-reply-ta"), v = ta.value.trim(); if (!v) return;
+    act("POST", P + form.path, {...(form.extra || {}), text: v}, () => { delete drafts[rkey + "/" + ta.dataset.draft]; ta.value = ""; });
+  };
   $("d-log-btn").onclick = () => { const pre = $("d-log"); pre.hidden = !pre.hidden; if (!pre.hidden) startLog(t.id); else stopLog(); };
-  if (running) { $("d-log").hidden = false; startLog(t.id); }
+}
+const drafts = {};
+$("d-reply").addEventListener("input", e => {
+  const ta = e.target.closest("textarea[data-draft]"); if (ta) drafts[$("d-reply").dataset.key + "/" + ta.dataset.draft] = ta.value;
+});
+$("d-reply").addEventListener("keydown", e => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("d-reply").querySelector(".btn")?.click(); }
+});
+/* the window has to open inside the click (Safari blocks it otherwise); it gets
+   its address once the server says which session belongs to the task */
+async function openSession(t){
+  const name = current, s = t.session;
+  const href = w => "/term/?arg=" + encodeURIComponent(name + ":" + w);
+  if (s?.alive) { window.open(href(s.win), `term-${name}-${s.win}`); return; }
+  const win = window.open("", "_blank");
+  try {
+    const d = await api("POST", `/${name}/tasks/${t.id}/session`);
+    if (win) { try { win.name = `term-${name}-${d.win}`; } catch (e) {} win.location.href = href(d.win); }
+    else window.open(href(d.win), `term-${name}-${d.win}`);
+    loadTasks().catch(() => {});
+  } catch (e) { if (win) win.close(); showErr(e.message); }
+}
+/* the newest section that says something (the runner's Run record does not) */
+function lastKind(t){
+  const xs = (t.sections || []).filter(x => x.kind !== "Run");
+  return xs.length ? xs[xs.length - 1].kind : "";
+}
+function lastRunNote(t){
+  const run = [...(t.sections || [])].reverse().find(x => x.kind === "Run");
+  return run ? ((run.text.match(/^\s*-\s*note:\s*(.+)$/mi) || [])[1] || "") : "";
+}
+function situation(t){
+  const k = lastKind(t), q = openQuestions(t), B = x => `<b>${x}</b>`;
+  if (t.run) return {tone: "run", html: B(t.status === "triage" ? "Agent připravuje plán…" : "Agent pracuje…")};
+  if (t.deploy) return {tone: "run", html: B("Nasazuje se…")};
+  if (t.session?.driver) return {tone: "run", html: B("Pracuje se v terminálu (Claude úkolu).")};
+  switch (t.status) {
+    case "triage": return {tone: "", html: B("Čeká na plánování.")};
+    case "backlog": return {tone: "", html: B("Odloženo.")};
+    case "todo": return {tone: "", html: B("Ve frontě.")};
+    case "in-progress": return {tone: "bad", html: B("Běh se ztratil.") + " Spusť ho znovu."};
+    case "review": return t.phase === "triage"
+      ? {tone: "ok", html: q ? B("Plán je hotový, agent se ptá.") + " Odpověz dole, nebo plán schval." : B("Plán je hotový.") + " Schval ho, nebo dole napiš připomínky."}
+      : {tone: "ok", html: B("Hotovo ke kontrole.") + " Výsledek je níže. Nesedí-li, napiš dole co opravit."};
+    case "need-attention":
+      if (k === "Verify") return {tone: "bad", html: B("Neprošlo ověření.") + " Chyba je níže."};
+      if (k === "Questions" || q) return {tone: "ask", html: B("Agent se ptá.") + " Odpověz dole."};
+      if (k === "Error") return {tone: "bad", html: B("Běh se přerušil.")};
+      return {tone: "bad", html: B("Agent nedokončil.") + " " + esc(lastRunNote(t))};
+    case "done": {
+      if (!t.code) return {tone: "ok", html: B("Hotovo.")};
+      const d = lastDeploy(t);
+      if (k === "Deploy" && t.code.state !== "deployed" && d) return {tone: "bad", html: B("Nasazení se nepovedlo") + " – " + ({
+        conflict: `závisí na nenasazeném úkolu ${esc(d.depends.join(", ") || "?")}.`,
+        "verify failed": "samostatně neprošlo ověřením. Nic se nenasadilo.",
+        "push failed": "push selhal. Nic se nenasadilo.",
+        "deploy failed": "pushnuto, ale deploy selhal."}[d.outcome] || esc(d.note))};
+      if (t.code.state === "deployed") return d?.outcome === "deployed with errors" && k === "Deploy"
+        ? {tone: "ask", html: B("Nasazeno, ale kontrola po nasazení selhala.") + " Výstup je v záznamu Nasazení."}
+        : {tone: "ok", html: B("Nasazeno.")};
+      if (t.code.state === "pushed" && !t.code.tracked) return {tone: "", html: B("Schváleno a pushnuto.")};
+      return {tone: "ask", html: B("Schváleno, ještě nenasazeno.")};
+    }
+  }
+  return null;
+}
+const DEPLOY_CS = {deployed: "nasazeno", "deployed with errors": "nasazeno, kontrola selhala", conflict: "konflikt", "verify failed": "samostatně neprošlo ověřením",
+                   "push failed": "push selhal", "deploy failed": "deploy selhal", refused: "odmítnuto"};
+function lastDeploy(t){
+  const d = [...(t.sections || [])].reverse().find(x => x.kind === "Deploy");
+  if (!d) return null;
+  const get = k => (d.text.match(new RegExp("^\\s*-\\s*" + k + ":\\s*(.+)$", "mi")) || [])[1] || "";
+  return {outcome: get("outcome"), note: get("note"), depends: get("depends on").split(/[ ,]+/).filter(Boolean)};
+}
+function runSummary(text){
+  // "- mode: triage", "- outcome: review", "- duration: 2 min 9 s", "- cost: $1.02" -> "triage · 2 min 9 s · $1.02"
+  const get = k => (String(text).match(new RegExp("^\\s*-\\s*" + k + ":\\s*(.+)$", "mi")) || [])[1] || "";
+  const mode = {triage: "plánování", run: "implementace"}[get("mode")] || get("mode") || DEPLOY_CS[get("outcome")] || get("outcome");
+  return "(" + [mode, get("duration"), get("cost")].filter(Boolean).join(" · ") + ")";
 }
 let logShown = false;
 async function fetchLog(id){
@@ -575,6 +973,15 @@ async function fetchLog(id){
 }
 function startLog(id){ logShown = true; stopLog(true); fetchLog(id); logTimer = setInterval(() => fetchLog(id), 4000); }
 function stopLog(keep){ if (logTimer) clearInterval(logTimer); logTimer = null; if (!keep) logShown = false; }
+
+/* ---- help ---- */
+const help = $("help");
+$("help-btn").addEventListener("click", () => help.showModal());
+$("help-close").addEventListener("click", () => help.close());
+help.addEventListener("click", e => { if (e.target === help) help.close(); });     // click on the backdrop
+document.addEventListener("keydown", e => {
+  if (e.key === "?" && !e.target.closest("input,textarea,select,[contenteditable]") && !help.open) { e.preventDefault(); help.showModal(); }
+});
 
 /* ---- live updates ---- */
 function setLive(on, txt){ $("live").classList.toggle("on", on); $("live-txt").textContent = txt; }

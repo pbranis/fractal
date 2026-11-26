@@ -53,4 +53,12 @@ fractal_agent_cmd() {
     fi
 }
 
+# Same, but always a new conversation - for the extra prompt windows (p1, p2...),
+# which would otherwise resume the one the main agent window is in.
+fractal_agent_new_cmd() {
+    local extra="${1:-}"
+    [ -n "$extra" ] && extra=" $extra"
+    printf '%s' "$FRACTAL_AGENT $FRACTAL_AGENT_FLAGS$extra; exec bash"
+}
+
 export PATH="$HOME/.local/bin:$PATH"

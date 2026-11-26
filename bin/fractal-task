@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""fractal-task - work with one task of the board from a terminal.
+
+    fractal-task [<project>/<id>] <command> [text]
+
+Inside a task's own Claude session (<project>-p<n>, started with the task)
+the task is the default ($FRACTAL_TASK); elsewhere name it, or give just the
+id inside a project directory. Every change goes through fractal-tasks, the
+board's service, so it commits the task file and the board updates live -
+the terminal and the web board are two views of the same task.
+
+    show                         state and the whole task file
+    plan | questions | answers | feedback | result [text]
+                                 append that section; text from the argument or stdin
+    approve | run | triage | stop | archive
+    verify                       run only the verify command again (no agent)
+    move <status>                backlog, todo, triage, done, canceled
+    answer <text>                answer the agent's questions (like the board: re-plan or requeue)
+    reject <text>                send finished work back with feedback
+    claim                        implementing here: -> in progress, the queue waits
+    finish                       done here: -> review
+    release                      given up here: -> backlog
+    session                      make sure the task's Claude session runs, print its terminal URL
+    deploy [<id>...]             deploy this done task's commits alone (plus the named
+                                 done tasks it needs); never push the branch for it
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+import fractal_tasks as T  # noqa: E402
+from fractal_config import URL, port  # noqa: E402
+
+API = f"http://127.0.0.1:{port('TASKS')}"
+NOTES = {"plan": "agent", "questions": "agent", "result": "agent", "answers": "owner", "feedback": "owner"}
+PLAIN = ("approve", "run", "triage", "verify", "stop", "archive", "claim", "finish", "release", "session")
+STATUS_LINE = {"triage": "triage (agent is planning)", "backlog": "backlog", "todo": "queued",
+               "in-progress": "in progress", "need-attention": "waiting for the owner (questions / problem)",
+               "review": "waiting for the owner's review", "done": "done", "canceled": "canceled"}
+
+
+def die(msg: str, code: int = 1) -> None:
+    print(f"fractal-task: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def call(method: str, path: str, body: dict | None = None) -> dict:
+    req = urllib.request.Request(API + path, method=method,
+                                 data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Content-Type": "application/json"} if body is not None else {})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error") or e.reason
+        except ValueError:
+            msg = e.reason
+        die(str(msg))
+    except OSError as e:
+        die(f"the board service is not reachable ({e})")
+    return {}
+
+
+def project_of_cwd() -> str | None:
+    cwd = os.path.realpath(os.getcwd())
+    best = None
+    for p in T.projects_with_tasks():
+        root = os.path.realpath(p["root"])
+        if (cwd == root or cwd.startswith(root + os.sep)) and (not best or len(root) > len(best[1])):
+            best = (p["name"], root)
+    return best[0] if best else None
+
+
+def target(args: list[str]) -> tuple[str, str, list[str]]:
+    if args and "/" in args[0]:
+        name, tid = args[0].split("/", 1)
+        return name, tid, args[1:]
+    if args and args[0][:1].isdigit():
+        name = project_of_cwd() or die("not inside a project with tasks/ - use <project>/<id>")
+        return name, args[0], args[1:]
+    env = os.environ.get("FRACTAL_TASK", "")
+    if "/" in env:
+        name, tid = env.split("/", 1)
+        return name, tid, args
+    die("which task? use <project>/<id> (or run it in the task's own session)")
+    return "", "", []
+
+
+def text_of(rest: list[str], what: str) -> str:
+    text = " ".join(rest).strip()
+    if not text and not sys.stdin.isatty():
+        text = sys.stdin.read().strip()
+    if not text:
+        die(f"{what}: no text (give it as an argument or on stdin)")
+    return text
+
+
+def show(name: str, tid: str) -> None:
+    t = call("GET", f"/{name}/tasks/{tid}")
+    proj = T.project(name)
+    others = [x for x in (proj and T.list_tasks(proj) or []) if x["status"] == "in-progress" and x["id"] != tid]
+    s = t.get("session") or {}
+    how = ""
+    if t["status"] == "in-progress":
+        how = " - from its terminal session" if s.get("driver") else " - by a headless run" if t.get("run") else ""
+    elif t.get("run"):
+        how = " - the agent is planning now"
+    print(f"task {name}/{t['id']}: {t['title']}")
+    print(f"status: {STATUS_LINE.get(t['status'], t['status'])}{how} (phase {t.get('phase')}, priority {t.get('priority')})")
+    for x in others:
+        print(f"note: task {x['id']} is being implemented right now - do not change code in the working tree")
+    print(f"board: {URL}tasks.html#{name}/{t['id']}")
+    if proj:
+        path = os.path.join(T.tasks_dir(proj), t["file"])
+        print(f"file: {path}\n")
+        with open(path, encoding="utf-8") as f:
+            sys.stdout.write(f.read())
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return
+    name, tid, rest = target(args)
+    if not rest:
+        rest = ["show"]
+    cmd, rest = rest[0], rest[1:]
+    P = f"/{name}/tasks/{tid}"
+    if cmd == "show":
+        return show(name, tid)
+    if cmd in NOTES:
+        t = call("POST", P + "/note", {"kind": cmd, "text": text_of(rest, cmd), "who": NOTES[cmd]})
+    elif cmd in ("answer", "reject"):
+        t = call("POST", P + "/" + cmd, {"text": text_of(rest, cmd)})
+    elif cmd == "move":
+        if not rest:
+            die("move <status>")
+        t = call("POST", P + "/move", {"status": rest[0]})
+    elif cmd == "session":
+        r = call("POST", P + "/session")
+        print(f"{r['session']}  {URL}term/?arg={name}:{r['win']}")
+        return
+    elif cmd == "deploy":
+        r = call("POST", P + "/deploy", {"with": rest})
+        print(f"deploying task {', '.join(r['deploying'])} of {name}: watch it on the board "
+              f"({URL}tasks.html#{name}/{tid}) or in the tmux window deploy-{'+'.join(r['deploying'])}")
+        return
+    elif cmd in PLAIN:
+        t = call("POST", P + "/" + cmd)
+    else:
+        die(f"unknown command '{cmd}' (see fractal-task --help)")
+    if "archived" in t:
+        print(f"archived as {t['archived']}")
+    else:
+        print(f"task {name}/{t['id']}: {STATUS_LINE.get(t['status'], t['status'])}")
+
+
+if __name__ == "__main__":
+    main()

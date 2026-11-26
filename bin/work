@@ -4,6 +4,11 @@
 #
 #   work              list projects from the registry
 #   work myproject    start its services and attach
+#   work myproject p2 attach to the extra terminal p2 - its own tmux session
+#                     "myproject-p2" with a fresh agent, created when missing;
+#                     s1, s2... are plain shells. Services are not started.
+#   work -d myproject p2   only create p2 when missing, do not attach (the
+#                     dashboard creates extra terminals this way before opening them)
 #
 # Projects are NOT hard-coded here - they come from the registry
 # ($FRACTAL_WWW/projects.json), the same one the dashboard and the browser
@@ -15,7 +20,7 @@ REG="$FRACTAL_REGISTRY"
 [ -f "$REG" ] || { echo "registry missing: $REG" >&2; exit 1; }
 
 usage() {
-    echo "work [project]"
+    echo "work [project [p<n>|s<n>]]   work -d project p<n>|s<n>"
     echo
     jq -r '.projects[] | "  \(.name)\t\(.root)\t\(.title)"' "$REG" 2>/dev/null \
         | column -t -s $'\t' | sed 's/^/  /'
@@ -23,7 +28,10 @@ usage() {
     echo "Inside tmux: Ctrl-b w list windows, Ctrl-b n/p next/previous, Ctrl-b d detach."
 }
 
+DETACH=""
+[ "${1:-}" = "-d" ] && { DETACH=1; shift; }
 NAME="${1:-}"
+TWIN="${2:-}"
 [ -z "$NAME" ] || [ "$NAME" = "-h" ] || [ "$NAME" = "--help" ] && { usage; exit 0; }
 
 ENTRY=$(jq -c --arg n "$NAME" '.projects[] | select(.name==$n)' "$REG" 2>/dev/null)
@@ -39,6 +47,32 @@ WIN="$FRACTAL_AGENT_WINDOW"
 
 [ -d "$ROOT" ] || { echo "project directory does not exist: $ROOT" >&2; exit 1; }
 
+# Extra terminal: p<n> runs a new agent conversation, s<n> a shell, each in a
+# tmux session of its own named <project>-<window> (shop-p1, shop-s2) with
+# the project root as its directory. The same name always lands in the same
+# session, so a ttyd reconnect does not spawn new ones. They are independent
+# of the project session: stopping the project's services leaves them alone,
+# and the main window is not switched under anyone looking at it.
+[ -n "$DETACH" ] && [ -z "$TWIN" ] && { echo "-d needs an extra terminal (p<n> or s<n>)" >&2; exit 1; }
+if [ -n "$TWIN" ]; then
+    [[ "$TWIN" =~ ^[ps][1-9][0-9]?$ ]] || { echo "window must be p<n> or s<n> (1-99), not '$TWIN'" >&2; exit 1; }
+    XS="$NAME-$TWIN"
+    # a registered project of that name owns the session name
+    if jq -e --arg n "$XS" '.projects[] | select(.name==$n)' "$REG" >/dev/null 2>&1; then
+        echo "'$XS' is a registered project - pick another number than $TWIN" >&2; exit 1
+    fi
+    if ! tmux has-session -t "=$XS" 2>/dev/null; then
+        if [ "${TWIN:0:1}" = p ]; then
+            tmux new-session -d -s "$XS" -n agent -c "$ROOT" "$(fractal_agent_new_cmd "$EXTRA")"
+        else
+            tmux new-session -d -s "$XS" -n shell -c "$ROOT"
+        fi
+    fi
+    [ -n "$DETACH" ] && exit 0
+    [ -n "${TMUX:-}" ] && exec tmux switch-client -t "=$XS"
+    exec tmux attach -t "=$XS"
+fi
+
 # 1. preparation: start services (already running ones are skipped by the ctl script)
 # shellcheck disable=SC2086
 [ -n "$PRE" ] && $PRE
@@ -51,19 +85,21 @@ AGENT_CMD=$(fractal_agent_cmd "$EXTRA")
 
 # 2. agent window; created only when missing so repeated `work` does not
 #    spawn prompt after prompt
-if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+# "=" everywhere: exact session name - a bare one would also match an extra
+# terminal "<project>-p1" while the project session itself is not running
+if ! tmux has-session -t "=$SESSION" 2>/dev/null; then
     tmux new-session -d -s "$SESSION" -n "$WIN" -c "$ROOT" "$AGENT_CMD"
-    tmux new-window -t "$SESSION" -n shell -c "$ROOT"
-elif ! tmux list-windows -t "$SESSION" -F '#W' 2>/dev/null | grep -qx "$WIN"; then
-    tmux new-window -t "$SESSION" -n "$WIN" -c "$ROOT" "$AGENT_CMD"
+    tmux new-window -t "=$SESSION:" -n shell -c "$ROOT"
+elif ! tmux list-windows -t "=$SESSION" -F '#W' 2>/dev/null | grep -qx "$WIN"; then
+    tmux new-window -t "=$SESSION:" -n "$WIN" -c "$ROOT" "$AGENT_CMD"
 fi
 
 # agent window first; -b -t {start} inserts before the first regardless of numbering
-tmux move-window -b -s "$SESSION:$WIN" -t "$SESSION:{start}" 2>/dev/null
-tmux select-window -t "$SESSION:$WIN"
+tmux move-window -b -s "=$SESSION:$WIN" -t "=$SESSION:{start}" 2>/dev/null
+tmux select-window -t "=$SESSION:$WIN"
 
 if [ -n "${TMUX:-}" ]; then
-    exec tmux switch-client -t "$SESSION"
+    exec tmux switch-client -t "=$SESSION"
 else
-    exec tmux attach -t "$SESSION"
+    exec tmux attach -t "=$SESSION"
 fi

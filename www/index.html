@@ -69,8 +69,11 @@
   .card .desc{color:var(--text2);font-size:13px;margin-bottom:14px}
 
   /* ---- hlavicka karty s vypinacem ---- */
-  .cardhead{display:flex;align-items:center;gap:12px;margin-bottom:2px}
-  .cardhead h2{margin:0;flex:1;min-width:0}
+  /* Kdyz se nazev s terminalem a vypinacem nevejde, ovladani se zalomi na
+     dalsi radek (doprava) - nesmi nazev smacknout na nulu a prekryt ho. */
+  .cardhead{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin-bottom:2px}
+  .cardhead h2{margin:0;flex:1 1 110px;min-width:0;overflow-wrap:anywhere}
+  .headctl{display:flex;align-items:center;gap:10px;margin-left:auto;flex:0 0 auto}
 
   /* Prepinac ve stylu iOS. Stav nenese jen barva, ale hlavne POLOHA knofliku
      (vlevo/vpravo) - to je citelne i bez barvocitu. Popisek vedle nej rika
@@ -238,12 +241,49 @@
   .term:hover{background:var(--accent);color:var(--card)}
   .term .hint{font-weight:400;opacity:.75;font-size:12px}
   /* Terminal v hlavicce karty projektu: plna vypln, at je videt na prvni
-     pohled; kompaktni, aby se vesel vedle nazvu i prepinace. */
-  .termtop{margin:0;flex:0 0 auto;padding:7px 14px;font-size:13.5px;font-weight:600;
-           background:var(--accent);color:#fff;border-color:var(--accent);
-           box-shadow:0 1px 2px rgba(0,0,0,.12)}
+     pohled; maly, aby se vesel vedle nazvu i prepinace. */
+  .termtop{margin:0;flex:0 0 auto;padding:4px 10px;font-size:12.5px;font-weight:600;
+           line-height:1.3;border-radius:6px;
+           background:var(--accent);color:#fff;border-color:var(--accent)}
   .termtop:hover{background:var(--text);border-color:var(--text);color:var(--bg)}
   .termtop:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+  /* Dalsi terminaly projektu (sessions <projekt>-p1... s Claude, -s1... se shellem) -
+     radek cipu pod popisem karty, na konci tlacitka pro nove okno. */
+  .terms{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:10px 0 2px}
+  .terms[hidden]{display:none}
+  .tchip{display:inline-flex;align-items:center;border:1px solid var(--border);
+         border-radius:999px;background:var(--chip);font-size:12.5px;line-height:1}
+  .tchip a{display:inline-flex;align-items:center;gap:6px;padding:5px 4px 5px 10px;
+           color:var(--text);text-decoration:none;font-variant-numeric:tabular-nums}
+  .tchip a:hover{color:var(--accent)}
+  .tchip .tst{color:var(--muted);font-size:11.5px}
+  .tchip .tname{max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tchip .dot{width:7px;height:7px}
+  .tchip .dot.work{background:var(--accent)} .tchip .dot.ask{background:var(--warn)}
+  .tchip .dot.idle{background:var(--good)}
+  .tchip button{appearance:none;border:0;background:none;cursor:pointer;color:var(--muted);
+                font:inherit;padding:5px 9px 5px 4px}
+  .tchip button:hover{color:var(--crit)}
+  /* Claude sessions: kazda na vlastnim radku s celym nazvem, shelly zustavaji cipy */
+  .trow{flex:1 1 100%;display:flex;align-items:center;min-width:0;border:1px solid var(--border);
+        border-radius:8px;background:var(--chip);font-size:13px;line-height:1.25}
+  .trow a{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:8px;padding:6px 4px 6px 10px;
+          color:var(--text);text-decoration:none}
+  .trow a:hover .tname{color:var(--accent)}
+  .trow .tname{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+  .trow .tname.none{color:var(--muted);font-weight:400;font-style:italic}
+  .trow .tst{flex:0 0 auto;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+  .trow .twin{flex:0 0 auto;color:var(--muted);font-size:11px}
+  .trow .dot{flex:0 0 auto;width:8px;height:8px;background:var(--muted)}
+  .trow .dot.work{background:var(--accent)} .trow .dot.ask{background:var(--warn)}
+  .trow .dot.idle{background:var(--good)}
+  .trow button{appearance:none;border:0;background:none;cursor:pointer;color:var(--muted);
+               font:inherit;padding:6px 10px 6px 6px}
+  .trow button:hover{color:var(--crit)}
+  .tnew{appearance:none;border:1px dashed var(--border);border-radius:999px;background:none;
+        padding:5px 10px;font:inherit;font-size:12.5px;line-height:1;color:var(--text2);cursor:pointer;
+        text-decoration:none}
+  .tnew:hover{border-color:var(--accent);color:var(--accent)}
   footer{margin-top:24px;color:var(--text2);font-size:12.5px}
 
   /* ---- akce stroje: terminal + nahravani ---- */
@@ -416,6 +456,10 @@
   .scard .a.sum{color:var(--text)}
   .scard .a.sum::before{content:"✦ ";color:hsl(var(--h,30) var(--pline))}
   .scard .a.err{color:var(--crit)}
+  /* ukol z modu v Claude Code: o cem session je, a na cem prave dela */
+  .scard .ttl.task::before{content:"◆ ";color:hsl(var(--h,30) var(--pline))}
+  .scard .now{font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .scard .now::before{content:"↳ ";color:var(--muted)}
   .scard .ago{color:var(--muted);font-size:11px;white-space:nowrap}
   .scard .a.alt{display:none}
   .scard.open .q,.scard.open .a{-webkit-line-clamp:unset;display:block}
@@ -673,8 +717,11 @@ async function pollCtl() {
     // nic neprepne, je horsi nez zadny - zmizi a zbytek stranky bezi dal.
     for (const s of SW.values()) { s.btn.remove(); s.lbl.remove(); }
     SW.clear();
+    for (const t of TERMS.values()) t.row.hidden = true;
     return;
   }
+  TERM_DATA = d.terms || {};
+  paintAllTerms();
   let busy = false;
   for (const name of SW.keys()) {
     const st = (d.projects || {})[name];
@@ -713,6 +760,137 @@ async function toggle(name) {
   scheduleCtl(600);
 }
 
+/* ---------------- dalsi terminaly projektu ----------------
+   Vedle hlavniho terminalu (tmux session projektu se sluzbami a agentem) si
+   jde otevrit dalsi samostatne tmux sessions: <projekt>-p1, -p2... s novou
+   konverzaci Claude, <projekt>-s1... s obycejnym shellem. ＋ si session
+   nejdriv necha zalozit serverem (POST /ctl/<projekt>/term/p - cislo vybira
+   server podle toho, co v tmux opravdu bezi, ne podle mozna stareho seznamu
+   tady) a teprve pak otevre /term/?arg=<projekt>:<p1>, ktera se uz jen
+   pripojuje. Session projektu se nemeni a stop sluzeb tyhle sessions nezabiji.
+   Seznam posila /ctl/state ("terms"), stav a nazev Claude bere z /ctl/sessions
+   (podle tmux pane). Claude sessions jsou radky s nazvem: ✎ v terminalu,
+   jinak /rename v Claude, jinak nazev, ktery si Claude dal sam.
+   Krizek zabije celou session - jen p<n>/s<n>. */
+
+const TERMS = new Map();       // jmeno projektu -> {row, p, local:Set}
+let TERM_DATA = {};            // z /ctl/state: projekt -> [{win, pane}]
+const SESS_PANE = new Map();   // tmux pane -> Claude session (z /ctl/sessions)
+let SESS_NOW = 0;              // cas serveru z posledniho /ctl/sessions
+
+function termRow(p) {
+  const row = el("div", "terms");
+  row.hidden = true;           // ukaze se, az odpovi /ctl (mimo tailnet nema smysl)
+  TERMS.set(p.name, {row, p});
+  return row;
+}
+
+function termHref(name, win) { return "/term/?arg=" + encodeURIComponent(name + ":" + win); }
+
+function termRowP(name, w) {
+  const x = SESS_PANE.get(w.pane) || null;
+  const st = x && SESS_STATE[x.status];
+  const row = el("div", "trow");
+  const a = el("a");
+  a.href = termHref(name, w.win);
+  a.target = `term-${name}-${w.win}`; a.rel = "noopener";
+  const dot = el("span", "dot");
+  if (st) dot.classList.add(st.work ? "work" : st.ask ? "ask" : "idle");
+  // ✎ v terminalu (tmux, vidi ho kazde zarizeni) > /rename > nazev od Claude
+  const title = w.title || (x && (x.label || x.title)) || "";
+  const label = el("span", "tname" + (title ? "" : " none"));
+  label.textContent = title || (x ? "nová konverzace" : "Claude nastartuje…");
+  a.append(dot, label);
+  if (x) {
+    const tst = el("span", "tst");
+    tst.textContent = (st && (st.work || st.ask) ? st.t + " " : "") + ago(Math.max(0, SESS_NOW - x.since));
+    tst.title = (st && (st.hint || st.t)) || x.status;
+    a.appendChild(tst);
+  }
+  const tw = el("span", "twin"); tw.textContent = w.win;
+  a.appendChild(tw);
+  a.title = (title ? `${title}\n` : "") + `Claude — tmux session ${name}-${w.win}`
+    + (x && x.title && x.title !== title ? `\nClaude: ${x.title}` : "");
+  const btn = el("button"); btn.type = "button"; btn.textContent = "×";
+  btn.title = `zavřít session ${name}-${w.win}`;
+  btn.addEventListener("click", () => closeTerm(name, w.win));
+  row.append(a, btn);
+  return row;
+}
+
+function termChipS(name, w) {
+  const chip = el("span", "tchip");
+  const a = el("a");
+  a.href = termHref(name, w.win);
+  a.target = `term-${name}-${w.win}`; a.rel = "noopener";
+  // vlastni nazev zalozky (✎ v terminalu) - ulozeny v tmux, takze ho vidi kazde zarizeni
+  const label = el("span", "tname"); label.textContent = w.title ? `${w.win} · ${w.title}` : w.win;
+  a.append(el("span", "dot"), label);
+  a.title = (w.title ? `${w.title}\n` : "") + `shell — tmux session ${name}-${w.win}`;
+  const x = el("button"); x.type = "button"; x.textContent = "×";
+  x.title = `zavřít session ${name}-${w.win}`;
+  x.addEventListener("click", () => closeTerm(name, w.win));
+  chip.append(a, x);
+  return chip;
+}
+
+/* ＋: okno se musi otevrit hned v kliknuti (jinak ho Safari zablokuje),
+   adresu dostane, az server session zalozi a rekne jeji cislo. */
+async function newTerm(name, kind) {
+  const win = window.open("", "_blank");
+  try {
+    const r = await fetch(`${CTL}/${encodeURIComponent(name)}/term/${kind}`, {method: "POST"});
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.win) throw new Error(j.error || "HTTP " + r.status);
+    if (win) {
+      try { win.name = `term-${name}-${j.win}`; } catch (e) {}
+      win.location.href = termHref(name, j.win);
+    } else {
+      window.open(termHref(name, j.win), `term-${name}-${j.win}`);
+    }
+  } catch (e) {
+    if (win) win.close();
+    alert(`Terminál se nepodařilo založit: ${e.message}`);
+  }
+  scheduleCtl(300);
+}
+
+function paintTerms(name) {
+  const t = TERMS.get(name);
+  if (!t) return;
+  const wins = TERM_DATA[name] || [];
+  const kids = [
+    ...wins.filter(w => w.win[0] === "p").map(w => termRowP(name, w)),
+    ...wins.filter(w => w.win[0] !== "p").map(w => termChipS(name, w)),
+  ];
+  for (const [kind, text, tip] of [["p", "＋ Claude", "nová tmux session s novou konverzací Claude"],
+                                   ["s", "＋ shell", "nová tmux session s obyčejným shellem"]]) {
+    const b = el("button", "tnew");
+    b.type = "button"; b.textContent = text; b.title = tip;
+    b.addEventListener("click", () => newTerm(name, kind));
+    kids.push(b);
+  }
+  t.row.replaceChildren(...kids);
+  t.row.hidden = false;
+}
+
+function paintAllTerms() { for (const name of TERMS.keys()) paintTerms(name); }
+
+async function closeTerm(name, win) {
+  const w = (TERM_DATA[name] || []).find(x => x.win === win);
+  const x = w && SESS_PANE.get(w.pane);
+  const st = x && SESS_STATE[x.status];
+  const title = (w && w.title) || (x && (x.label || x.title));
+  if (!confirm(`Zavřít terminál ${name}-${win}${title ? ` „${title}"` : ""}?` + (st && st.work ? "\nClaude v něm právě pracuje." : ""))) return;
+  try {
+    const r = await fetch(`${CTL}/${encodeURIComponent(name)}/term/${encodeURIComponent(win)}/close`, {method: "POST"});
+    if (!r.ok && r.status !== 404) throw new Error("HTTP " + r.status);
+  } catch (e) {
+    alert(`Terminál se nepodařilo zavřít: ${e.message}`);
+  }
+  scheduleCtl(300);
+}
+
 function projectCard(p) {
   const card = document.createElement("section");
   card.className = "card";
@@ -727,6 +905,9 @@ function projectCard(p) {
   const head = document.createElement("div");
   head.className = "cardhead";
   head.appendChild(h);
+  // terminal + vypinac drzi pohromade - pri zalomeni jdou na dalsi radek spolu
+  const ctl = document.createElement("div");
+  ctl.className = "headctl";
   // Terminal je v hlavicce, hned vedle nazvu - je to nejcastejsi akce na
   // karte, tak at se na nej neroluje pod seznam sluzeb.
   if (p.terminal !== false) {
@@ -738,13 +919,14 @@ function projectCard(p) {
     a.rel = "noopener";
     a.textContent = "▸ Terminál";
     a.title = "tmux + Claude";
-    head.appendChild(a);
+    ctl.appendChild(a);
   }
   const err = document.createElement("div");
   err.className = "swerr";
   if (p.service && p.service.start && p.service.stop) {
-    head.append(...buildSwitch(p.name));
+    ctl.append(...buildSwitch(p.name));
   }
+  if (ctl.childElementCount) head.appendChild(ctl);
 
   const d = document.createElement("div");
   d.className = "desc";
@@ -756,7 +938,9 @@ function projectCard(p) {
   const ul = document.createElement("ul");
   for (const s of (p.links || [])) ul.appendChild(svcRow(s));
 
-  card.append(head, d, err, ul);
+  card.append(head, d, err);
+  if (p.terminal !== false) card.appendChild(termRow(p));
+  card.appendChild(ul);
   if (SW.has(p.name)) SW.get(p.name).err = err;
   return card;
 }
@@ -828,6 +1012,7 @@ function renderPinned(p) {
   }
 
   sec.append(h, d, acts);
+  if (hasTerm) sec.appendChild(termRow(p));
   if (p.actions && p.actions.length) sec.appendChild(hookRow);
   if (sendBox) sec.appendChild(sendBox);
   if (queryBox) sec.appendChild(queryBox);
@@ -1520,9 +1705,14 @@ function sessCard(x, now) {
   paintHue(c, x.project);
 
   const top = el("div", "top");
-  const ttl = el("span", "ttl");
-  ttl.textContent = x.title || x.name || "(bez názvu)";
-  ttl.title = `${x.title || x.name}\n${x.cwd}` + (x.tmux ? `\ntmux ${x.tmux}` : "");
+  // Nazev, ktery session dal uzivatel (✎ v terminalu), ma prednost. Jinak
+  // ukol, ktery si session vede sama (mod v Claude Code) - rika vic nez
+  // nazev konverzace, takze stoji na jeho miste a nazev jde do tooltipu.
+  const task = x.task || null;
+  const ttl = el("span", "ttl" + (!x.label && task && task.summary ? " task" : ""));
+  ttl.textContent = x.label || (task && task.summary) || x.title || x.name || "(bez názvu)";
+  ttl.title = (task && task.summary ? `úkol${task.pinned ? " (ručně)" : ""}: ${task.summary}\n` : "")
+    + `${x.title || x.name}\n${x.cwd}` + (x.tmux ? `\ntmux ${x.tmux}` : "");
   const s = el("span", "st");
   // slovo jen u stavu, ktere chteji pozornost; obycejne cekani = seda tecka
   // a cas (slovo zustava v tooltipu), at zbyde misto na nazev
@@ -1545,6 +1735,11 @@ function sessCard(x, now) {
     top.appendChild(a);
   }
   c.appendChild(top);
+  if (task && (task.active || task.total)) {
+    const n = el("div", "now");
+    n.textContent = (task.active || "hotovo") + (task.total ? ` · ${task.done}/${task.total}` : "");
+    c.appendChild(n);
+  }
 
   const toggleOpen = () => {
     sessOpen.has(x.sessionId) ? sessOpen.delete(x.sessionId) : sessOpen.add(x.sessionId);
@@ -1597,6 +1792,10 @@ async function loadSessions() {
   document.getElementById("sess-err").textContent = "";
   const now = d.now || Date.now() / 1000;
   const all = d.sessions || [];
+  SESS_PANE.clear();
+  SESS_NOW = now;
+  for (const x of all) if (x.pane) SESS_PANE.set(x.pane, x);
+  paintAllTerms();
   const isOld = x => { const st = SESS_STATE[x.status] || {};
                        return !st.work && !st.ask && now - x.since > STALE_H * 3600; };
   const live = all.filter(x => !isOld(x));

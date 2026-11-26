@@ -14,6 +14,8 @@
 #
 # Rules the dashboard relies on:
 #   * services run in a tmux session named after the project, one window each
+#   * tmux targets use "=$SESSION" (exact name): a bare name also matches the
+#     extra terminals "<name>-p1" by prefix while the project session is down
 #   * `start` is idempotent - a running service is never started twice
 #     (checked by port ownership, not by pid files)
 #   * bind 0.0.0.0, otherwise the dashboard links will not reach the service
@@ -36,8 +38,8 @@ start_app() {
     local owner; owner=$(port_owner)
     if [ -n "$owner" ]; then echo "  $SESSION already running (port $PORT, pid $owner)"; return; fi
     local run="cd \"$ROOT\"; $CMD; echo; echo \"--- $SESSION exited (rc \$?) ---\"; exec bash"
-    if tmux has-session -t "$SESSION" 2>/dev/null; then
-        tmux new-window -t "$SESSION" -n web "$run"
+    if tmux has-session -t "=$SESSION" 2>/dev/null; then
+        tmux new-window -t "=$SESSION:" -n web "$run"
     else
         tmux new-session -d -s "$SESSION" -n web "$run"
     fi
@@ -52,13 +54,13 @@ stop_app() {
         [ -n "$pgid" ] && kill -- "-$pgid" 2>/dev/null || kill "$owner" 2>/dev/null
         echo "  $SESSION stopped (pid $owner)"
     fi
-    tmux kill-window -t "$SESSION:web" 2>/dev/null
+    tmux kill-window -t "=$SESSION:web" 2>/dev/null
 }
 
 status() {
     local owner; owner=$(port_owner)
     if [ -n "$owner" ]; then echo "  $SESSION: running (port $PORT, pid $owner)"; else echo "  $SESSION: stopped"; fi
-    tmux has-session -t "$SESSION" 2>/dev/null && echo "  tmux session '$SESSION' exists (attach: $SESSION attach)"
+    tmux has-session -t "=$SESSION" 2>/dev/null && echo "  tmux session '$SESSION' exists (attach: $SESSION attach)"
 }
 
 case "${1:-status}" in
@@ -66,8 +68,8 @@ case "${1:-status}" in
     stop)    stop_app ;;
     restart) stop_app; sleep 1; start_app ;;
     status)  status ;;
-    attach)  exec tmux attach -t "$SESSION" ;;
-    logs)    tmux capture-pane -p -t "$SESSION:web" -S -40 ;;
+    attach)  exec tmux attach -t "=$SESSION" ;;
+    logs)    tmux capture-pane -p -t "=$SESSION:web" -S -40 ;;
     cd)      echo "$ROOT" ;;
     *)       echo "usage: $SESSION start|stop|restart|status|attach|logs|cd" >&2; exit 2 ;;
 esac

@@ -28,7 +28,9 @@ to add a project.
   streams the answer back. Buttons can run named commands from the registry.
 - **Telegram bot** (optional) with the same verbs: `/status`, `/start`,
   `/stop`, `/run`, `/send`, `/ask`, `/task` from your phone, plus a ping when
-  a project dies or comes back on its own, or a task run ends. Long polling,
+  a project dies or comes back on its own, or a task run ends; plain text is a
+  conversation with Claude on the machine, in general or in one project's
+  context (`/project`, `/projects` with tap-to-switch buttons). Long polling,
   so no public address is needed.
 - **Task board** (`/tasks.html`): a small kanban per project over markdown
   files in `<root>/tasks/`. A new task gets a triage session (plan +

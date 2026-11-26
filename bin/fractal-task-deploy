@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+"""Deploy ONE task (or a few that belong together) - its commits and nothing else.
+
+    fractal-task-deploy <project> <task id> [<task id>...]
+    fractal-task-deploy ... --dry-run     stop before the push: shows whether the
+                                          task applies and passes on its own
+    fractal-task-deploy ... --keep 0      exit at once instead of leaving the window
+                                          open for a while afterwards
+
+Tasks share one branch, so pushing it would ship every finished-but-unreviewed
+task with the one meant. Instead:
+
+1. fetch the upstream (origin/main) and take the task's own commits - the
+   ones prefixed "task <id>: " that the upstream does not have yet;
+2. cherry-pick them onto the upstream in a throwaway worktree - a conflict
+   means the task builds on another undeployed one, which is named;
+3. run deploy_prepare and the task's verify command THERE, so it passes
+   without the other tasks' code;
+4. push that worktree to the upstream (fast-forward only) and run
+   deploy_run, then ask deploy_check whether the production has it;
+5. realign the local branch: rebase it onto the new upstream in another
+   throwaway worktree and move the branch only when the resulting tree is
+   identical - the working tree, the index and anyone's uncommitted work
+   are never touched; skipped while a task is being implemented;
+6. append a Deploy record to the task file and commit it.
+
+deploy_check, deploy_prepare and deploy_run are machine-local board settings
+(tasks-state.json), see docs/tasks.md. fractal-tasks starts this in a tmux
+window "deploy-<ids>" of the project's session; the window is renamed
+"deployed-<ids>" when the record is written.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+import fractal_tasks as T  # noqa: E402
+from fractal_config import CFG, HOME, STATE_DIR, URL  # noqa: E402
+
+KEEP_WINDOW = 300
+VERIFY_TIMEOUT = 30 * 60
+DEPLOY_TIMEOUT = 60 * 60
+BOLD, DIM, RESET = "\033[1m", "\033[2m", "\033[0m"
+GREEN, YELLOW, RED = "\033[32m", "\033[33m", "\033[31m"
+
+
+class Failed(Exception):
+    def __init__(self, outcome: str, note: str, depends: list[str] | None = None):
+        super().__init__(note)
+        self.outcome, self.note, self.depends = outcome, note, depends or []
+
+
+def say(msg: str, log) -> None:
+    print(msg, flush=True)
+    log.write(time.strftime("%H:%M:%S ") + msg.replace(BOLD, "").replace(DIM, "").replace(RESET, "")
+              .replace(GREEN, "").replace(YELLOW, "").replace(RED, "") + "\n")
+    log.flush()
+
+
+def stream(cmd: str, cwd: str, log, timeout: int, env: dict | None = None) -> tuple[int, str]:
+    """Run a shell command, show and log its output; (exit code, last lines)."""
+    proc = subprocess.Popen(["bash", "-c", cmd], cwd=cwd, env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, errors="replace", bufsize=1,
+                            start_new_session=True)
+    assert proc.stdout
+    tail: list[str] = []
+    started = time.monotonic()
+    for line in proc.stdout:
+        print("  " + line, end="", flush=True)
+        log.write("  " + line)
+        tail = (tail + [line.rstrip()])[-40:]
+        if time.monotonic() - started > timeout:
+            proc.kill()
+            tail.append(f"TIMEOUT after {timeout // 60} min")
+            break
+    log.flush()
+    return proc.wait(), "\n".join(tail)
+
+
+def notify(text: str) -> None:
+    exe = os.path.join(HOME, ".local", "bin", "fractal-telegram")
+    if os.path.exists(CFG["FRACTAL_TELEGRAM_TOKEN_FILE"]) and os.path.exists(exe):
+        try:
+            subprocess.run([exe, "notify", text], timeout=30, capture_output=True)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+
+def owners(root: str, files: set[str], skip: set[str], ref: str) -> list[str]:
+    """Ids of the other tasks with undeployed commits touching these files."""
+    pending = T.missing_from(root, ref)
+    out = []
+    for line in T.git(root, "log", "--format=%H %s", f"{ref}..HEAD").stdout.splitlines():
+        full, _, subject = line.partition(" ")
+        if full not in pending or not subject.startswith("task "):
+            continue
+        tid = subject[5:].split(":", 1)[0]
+        if tid in skip or tid in out:
+            continue
+        touched = set(T.git(root, "show", "--name-only", "--format=", full).stdout.split())
+        if touched & files:
+            out.append(tid)
+    return sorted(out)
+
+
+def realign(root: str, ref: str, log) -> str:
+    """Rebase the local branch onto ref without touching the working tree.
+    Returns what happened, for the record."""
+    branch = T.git(root, "symbolic-ref", "-q", "--short", "HEAD").stdout.strip()
+    if not branch:
+        return "local branch not realigned: HEAD is detached"
+    old = T.git(root, "rev-parse", "HEAD").stdout.strip()
+    if T.git(root, "merge-base", "--is-ancestor", ref, old).returncode == 0:
+        return "local branch already contains the upstream"
+    wt = tempfile.mkdtemp(prefix="realign-", dir=os.path.join(STATE_DIR, "deploy"))
+    try:
+        if T.git(root, "worktree", "add", "-q", "--detach", wt, old).returncode != 0:
+            return "local branch not realigned: worktree failed"
+        r = T.git(wt, "rebase", "-q", ref)
+        if r.returncode != 0:
+            T.git(wt, "rebase", "--abort")
+            return "local branch not realigned: the rebase conflicts (left as it was; `git pull --rebase` by hand)"
+        new = T.git(wt, "rev-parse", "HEAD").stdout.strip()
+        if T.git(root, "diff", "--quiet", old, new).returncode != 0:
+            return "local branch not realigned: the rebased tree would differ (left as it was)"
+        # compare-and-swap: a commit made meanwhile wins, we try again next time
+        if T.git(root, "update-ref", "-m", "fractal-task-deploy: realign", f"refs/heads/{branch}", new, old).returncode != 0:
+            return "local branch not realigned: it moved meanwhile"
+        say(f"{DIM}local {branch} rebased onto {ref}: {old[:7]} -> {new[:7]} (same tree){RESET}", log)
+        return f"local {branch} rebased onto the upstream ({old[:7]} -> {new[:7]}), the working tree untouched"
+    finally:
+        T.git(root, "worktree", "remove", "--force", wt)
+        shutil.rmtree(wt, ignore_errors=True)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("project")
+    ap.add_argument("ids", nargs="+")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--keep", type=int, default=KEEP_WINDOW)
+    a = ap.parse_args()
+
+    proj = T.project(a.project)
+    if not proj:
+        sys.exit(f"{a.project}: not a registered project with a tasks/ directory")
+    root, name = proj["root"], proj["name"]
+    tasks = []
+    for tid in a.ids:
+        t = T.find(proj, tid)
+        if not t:
+            sys.exit(f"{name}: no task {tid}")
+        tasks.append(t)
+    ids = [t["id"] for t in tasks]
+    st = T.project_settings(name)
+    if not st["deploy_run"] and not a.dry_run:
+        sys.exit(f"{name}: no deploy_run configured (see docs/tasks.md)")
+
+    os.makedirs(os.path.join(T.tasks_dir(proj), T.LOGS_DIRNAME), exist_ok=True)
+    os.makedirs(os.path.join(STATE_DIR, "deploy"), exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    log_path = os.path.join(T.tasks_dir(proj), T.LOGS_DIRNAME, f"{'+'.join(ids)}-deploy-{stamp}.log")
+    log = open(log_path, "a", encoding="utf-8")
+    started = time.monotonic()
+    say(f"{BOLD}deploy {name} · task {', '.join(ids)}{' · DRY RUN' if a.dry_run else ''}{RESET}", log)
+    for t in tasks:
+        say(f"{DIM}  {t['id']}  {t['title']}{RESET}", log)
+
+    picked: list[tuple[str, str]] = []          # (original short hash, new short hash)
+    outcome, notes, depends, prod = "deployed", [], [], ""
+    wt = ""
+    try:
+        remote, branch = T.upstream(root)
+        if not branch:
+            raise Failed("refused", "the current branch has no upstream to deploy to")
+        ref = f"{remote}/{branch}"
+        say(f"fetching {ref} ...", log)
+        if not T.fetch_upstream(root):
+            raise Failed("refused", f"could not fetch {ref}")
+        base = T.git(root, "rev-parse", ref).stdout.strip()
+
+        # 1. the commits: the task's own, not yet upstream, in history order
+        pending = T.missing_from(root, ref)
+        commits = [(full, short, subj) for t in tasks for full, short, subj in T.task_commits(root, t["id"])
+                   if full in pending]
+        order = {full: i for i, full in enumerate(T.git(root, "rev-list", "--reverse", f"{ref}..HEAD").stdout.split())}
+        commits.sort(key=lambda c: order.get(c[0], 0))
+        if not commits:
+            say("nothing of these tasks is missing upstream: deploying what is pushed", log)
+        for _, short, subj in commits:
+            say(f"  {short}  {subj}", log)
+
+        # 2. onto the upstream, alone
+        wt = tempfile.mkdtemp(prefix=f"{name}-", dir=os.path.join(STATE_DIR, "deploy"))
+        if T.git(root, "worktree", "add", "-q", "--detach", wt, base).returncode != 0:
+            raise Failed("refused", "could not create the deploy worktree")
+        for full, short, _ in commits:
+            r = T.git(wt, "cherry-pick", "--allow-empty", full)
+            if r.returncode != 0:
+                files = set(T.git(wt, "diff", "--name-only", "--diff-filter=U").stdout.split())
+                T.git(wt, "cherry-pick", "--abort")
+                depends = owners(root, files, set(ids), ref)
+                raise Failed("conflict", f"{short} does not apply to {ref} on its own"
+                             + (f" - it builds on task {', '.join(depends)}" if depends else "")
+                             + f" (conflicts in {', '.join(sorted(files)[:5]) or '?'})", depends)
+            picked.append((short, T.git(wt, "rev-parse", "--short", "HEAD").stdout.strip()))
+        say(f"{GREEN}applies on its own{RESET} onto {ref} {base[:7]}", log)
+
+        # 3. does it pass there, without the other tasks?
+        # a verify may name the project by its absolute path: here it means the worktree
+        verifies = [t["verify"].replace(root.rstrip("/") + "/", wt + "/").replace(root.rstrip("/"), wt)
+                    for t in tasks if t.get("verify")]
+        if verifies:
+            script = "set -e\n" + (st["deploy_prepare"] + "\n" if st["deploy_prepare"] else "") + \
+                     "\n".join(f"( {v} )" for v in dict.fromkeys(verifies))
+            say(f"{BOLD}verify in isolation{RESET} {DIM}{' && '.join(dict.fromkeys(verifies))}{RESET}", log)
+            code, tail = stream(script, wt, log, VERIFY_TIMEOUT, env=dict(os.environ, FRACTAL_ROOT=root))
+            if code != 0:
+                files = set(T.git(wt, "diff", "--name-only", base, "HEAD").stdout.split())
+                depends = owners(root, files, set(ids), ref)
+                raise Failed("verify failed", "the verify fails with the task alone on the upstream"
+                             + (f" - it probably needs task {', '.join(depends)} (shared files)" if depends else "")
+                             + f":\n\n```\n{tail[-1500:]}\n```", depends)
+            say(f"{GREEN}verify passed in isolation{RESET}", log)
+        else:
+            notes.append("no verify command: not checked in isolation")
+
+        if a.dry_run:
+            raise Failed("dry run", "stopped before the push; " + ("applies and verifies on its own" if verifies else "applies on its own"))
+
+        # 4. push (fast-forward only) and deploy
+        new = T.git(wt, "rev-parse", "HEAD").stdout.strip()
+        if new != base:
+            say(f"pushing {new[:7]} to {ref} ...", log)
+            url = T.git(root, "remote", "get-url", "--push", remote).stdout.strip() or remote
+            r = T.git(wt, "push", "-q", url, f"HEAD:refs/heads/{branch}")
+            if r.returncode != 0:
+                raise Failed("push failed", f"push to {ref} refused: {r.stderr.strip()[-300:]}")
+            T.git(root, "update-ref", f"refs/remotes/{remote}/{branch}", new)
+        say(f"{BOLD}deploy_run{RESET}", log)
+        code, tail = stream(st["deploy_run"], root, log, DEPLOY_TIMEOUT)
+        on_prod = None
+        if st["deploy_check"]:
+            r = subprocess.run(st["deploy_check"], shell=True, cwd=root, capture_output=True, text=True, timeout=60)
+            prod = (r.stdout.split() or [""])[0]
+            on_prod = bool(prod) and T.git(root, "merge-base", "--is-ancestor", new, prod).returncode == 0
+        if code != 0 and not on_prod:
+            raise Failed("deploy failed", f"pushed, but deploy_run failed (exit {code}):\n\n```\n{tail[-1500:]}\n```")
+        if code != 0:
+            # the production runs it; what failed came after (a smoke test, a follow-up step)
+            outcome = "deployed with errors"
+            notes.append(f"the production runs {new[:7]}, but deploy_run then failed (exit {code}):\n\n```\n{tail[-1500:]}\n```")
+        elif on_prod is False:
+            raise Failed("deploy failed", f"deploy_run passed, but the production reports {prod[:12] or 'nothing'}, not {new[:7]}")
+        prod = prod[:7]
+        say(f"{GREEN}{BOLD}{outcome}{RESET}", log)
+
+        # 5. the local branch catches up (nothing runs that could be committing)
+        if any(x["status"] == "in-progress" for x in T.list_tasks(proj)):
+            notes.append("local branch not realigned while a task is being implemented")
+        else:
+            notes.append(realign(root, ref, log))
+    except Failed as e:
+        outcome, depends = e.outcome, e.depends
+        notes.insert(0, e.note)
+        say(f"{GREEN}{e.note}{RESET}" if outcome == "dry run" else f"{RED}{BOLD}{outcome}{RESET}: {e.note}", log)
+    finally:
+        if wt:
+            T.git(root, "worktree", "remove", "--force", wt)
+            shutil.rmtree(wt, ignore_errors=True)
+
+    # 6. the record
+    took = int(time.monotonic() - started)
+    meta = [f"- outcome: {outcome}", f"- duration: {took // 60} min {took % 60} s"]
+    if len(ids) > 1:
+        meta.append(f"- together: {', '.join(ids)}")
+    if picked:
+        meta.append("- commits: " + ", ".join(f"{o} -> {n}" if o != n else o for o, n in picked))
+    if prod:
+        meta.append(f"- production: {prod}")
+    if depends:
+        meta.append(f"- depends on: {', '.join(depends)}")
+    meta.append(f"- log: {os.path.relpath(log_path, root)}")
+    meta += [f"- note: {n}" for n in notes if "\n" not in n]
+    body = "\n".join(meta) + "".join(f"\n\n{n}" for n in notes if "\n" in n)      # a failure's output last
+    if not a.dry_run:
+        for t in tasks:
+            t = T.load(t["path"])
+            T.append(t, "Deploy", body, who="runner")
+            T.write(t)
+            T.commit_task_file(root, t["path"], f"task {t['id']}: deploy -> {outcome}")
+        ok = outcome.startswith("deployed")
+        notify(f"{'🚀' if ok else '⚠'} {name} · task {', '.join(ids)}: "
+               f"{outcome}{'' if outcome == 'deployed' else ' - ' + notes[0].splitlines()[0][:200]}\n"
+               f"{URL}tasks.html#{name}/{ids[0]}")
+    else:
+        print("\n" + body)
+    log.close()
+    if os.environ.get("TMUX_PANE"):             # the board counts "deploy-*" windows as running
+        subprocess.run(["tmux", "rename-window", "-t", os.environ["TMUX_PANE"], "deployed-" + "+".join(ids)],
+                       capture_output=True)
+
+    if a.keep > 0:
+        print(f"{DIM}this window closes in {a.keep} s (Ctrl-C keeps it: a shell follows){RESET}")
+        try:
+            time.sleep(a.keep)
+        except KeyboardInterrupt:
+            os.execvp("bash", ["bash"])
+    return 0 if outcome.startswith("deployed") or outcome == "dry run" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

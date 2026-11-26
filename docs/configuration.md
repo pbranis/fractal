@@ -41,7 +41,7 @@ touched).
 | generated data | `$FRACTAL_WWW/status.json`, `claude-usage.json`, `codex-usage.json` |
 | autostart memory | `$FRACTAL_STATE_DIR/autostart.json` |
 | task board settings | `$FRACTAL_STATE_DIR/tasks-state.json` (auto queue / auto triage per project); the tasks themselves are `<root>/tasks/*.md` in each project |
-| telegram | `$FRACTAL_TELEGRAM_TOKEN_FILE` (0600), `$FRACTAL_STATE_DIR/telegram-defaults.json`, optional `telegram-help.txt` |
+| telegram | `$FRACTAL_TELEGRAM_TOKEN_FILE` (0600), `$FRACTAL_STATE_DIR/telegram-defaults.json`, `telegram-chats.json`, optional `telegram-help.txt` |
 | user units | `~/.config/systemd/user/fractal-*.service|timer`, `<project>.service` |
 | nginx | `/etc/nginx/sites-available/fractal`, `/etc/nginx/snippets/fractal-*.conf` |
 
@@ -66,7 +66,7 @@ value is started as `<agent> <flags> <claudeArgs>; exec bash`; the headless
 
 Optional. `fractal-telegram` is a second client of `fractal-ctl` next to the
 dashboard: `/status`, `/start <p>`, `/stop <p>`, `/run <p> [hook]`,
-`/send <p> <text>`, `/ask <p> <question>`, `/use <p>`. It long-polls the
+`/send <p> <text>`, `/ask <p> <question>`, `/project <p>`, `/projects [folder]`. It long-polls the
 Bot API, so the machine needs no public address. Setup:
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`), copy
@@ -78,10 +78,22 @@ Bot API, so the machine needs no public address. Setup:
    your numeric user ID and nothing else. Put the ID into `fractal.env`,
    run `./install.sh` again.
 
-Plain text (no command) is a `/send` to the default project set with
-`/use`; with a `sendPrefix` in the registry the chat becomes a capture
-inbox. A file `$FRACTAL_STATE_DIR/telegram-help.txt` replaces the built-in
-`/help` text (`{url}` expands to `FRACTAL_URL`).
+Plain text (no command) is a conversation with the agent (`fractal-ctl`
+`POST /chat`, each message resumes the previous session). The conversation
+has a context: `/chat` is general (the agent runs in `$HOME`), `/project <p>`
+runs it in the project's root with its `claudeArgs` and makes `p` the default
+project of `/ask`, `/send`, `/run` and `/task`. Every context keeps its own
+conversation; `/new` starts the current one over. `/projects` lists the
+folders (registry groups, also matched by their directory under
+`~/projects`), `/projects <folder>` the projects of one; both come with
+buttons that switch the context. The state is kept in
+`$FRACTAL_STATE_DIR/telegram-chats.json`. To use the chat as a capture inbox
+again, `/send <p> <text>` still goes to the live agent window and honours
+the registry's `sendPrefix`. A file `$FRACTAL_STATE_DIR/telegram-help.txt` replaces the built-in
+`/help` text (`{url}` expands to `FRACTAL_URL`). Lines `## <key> | <button
+label>` split it into topics: `/help` shows the part before the first one with
+a button per topic, `/help <key>` one topic. A bare "help" without the slash
+works too, for dictation.
 
 Everyone not in `FRACTAL_TELEGRAM_USERS` is ignored. Groups are ignored.
 Read the Telegram section of SECURITY.md: the bot is a second door next to

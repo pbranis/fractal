@@ -3,6 +3,8 @@
 
     fractal-task-run <project> <task id> triage      read the code, append a Plan (+ Questions)
     fractal-task-run <project> <task id> run         implement, commit, append a Result
+    fractal-task-run <project> <task id> verify      only run the verify command again (no agent):
+                                                     review when it passes
     fractal-task-run ... --keep 0                    exit at once instead of leaving the
                                                      window open for a while afterwards
 
@@ -10,7 +12,9 @@ fractal-tasks (the board) starts this in a tmux window "task-<id>" of the
 project's session, so the run can be watched in the browser terminal; it
 works just as well by hand from a shell. One run = one headless Claude Code
 session (`claude -p`, stream-json) started in the project root, so the
-project's own CLAUDE.md applies. The agent gets the path of the task file and
+project's own CLAUDE.md applies. The session continues the task's own
+conversation - the one "Claude úkolu" opens - so every tool call and output
+of a run can be read, and asked about, there afterwards. The agent gets the path of the task file and
 reads it itself; everything it has to say goes into that file as appended
 sections, the runner maintains the frontmatter:
 
@@ -34,15 +38,17 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
 import fractal_tasks as T  # noqa: E402
 from fractal_config import CFG, HOME, URL  # noqa: E402
 
 NEED_ATTENTION = "NEED_ATTENTION"
-DEFAULT_TIMEOUT = {"triage": 25, "run": 120}        # minutes
+DEFAULT_TIMEOUT = {"triage": 25, "run": 120, "verify": 30}        # minutes
 MAX_TURNS = {"triage": 80, "run": 250}
 KEEP_WINDOW = 180                                   # seconds the tmux window stays after the run
+OUTPUT_LINES = 15                                   # of each tool result, in the log
 USAGE_LIMIT_RE = re.compile(r"usage limit|rate limit.*reached|limit will reset", re.I)
 BOLD, DIM, RESET = "\033[1m", "\033[2m", "\033[0m"
 CYAN, GREEN, YELLOW, RED = "\033[36m", "\033[32m", "\033[33m", "\033[31m"
@@ -61,9 +67,11 @@ THE TASK FILE: {path}
 (id {id}, title "{title}"). Read it first. The owner's request is the text
 before the first "## " heading; the sections after it (Plan, Questions,
 Answers, Feedback, Result, Run) are the task's history - the latest Answers
-and Feedback override earlier plans. The request may be written in Czech;
-produce code, identifiers, comments, UI strings and commit messages in
-English unless the project's own conventions (CLAUDE.md) say otherwise.
+and Feedback override earlier plans. Write everything you append to the
+task file, and your final message, in {lang} - also when earlier sections
+are in another language. Code, identifiers, comments, UI strings and commit
+messages are in English unless the project's own conventions (CLAUDE.md)
+say otherwise.
 
 Rules for the task file:
 - never rewrite the request or an earlier section; only APPEND new sections
@@ -78,21 +86,35 @@ deploy, do not push, unless the request explicitly asks for it.
 """
 
 TRIAGE = """MODE: TRIAGE. Do NOT modify anything in the repository except the task
-file. Explore the codebase as much as you need, then append to the task file:
+file. Explore the codebase as much as you need, then append to the task file
+ONE plan. The owner reads it on a phone and approves it, so it must be short
+and complete:
 
 ## Plan (agent · {now})
-- one to three sentences: what the owner wants, in your words
-- numbered steps, each naming the files or modules it touches
+- one or two sentences: what the owner wants and what the code does today
+- "Decided:" - at most five one-line bullets, the choices you made yourself
+  (the owner's Answers and Feedback already folded in)
+- "Steps:" - numbered, one line each, naming the files or modules; at most
+  ten. Detail such as line numbers, helper names and test cases belongs to
+  the implementation, not here
+- "Risks:" - at most three one-line bullets, only what the owner should know
 - a line "verify: <command>" with a non-interactive command that proves the
-  work (build, test, import check) - omit the line when nothing sensible exists
-- risks, things that could break, open points you decided yourself
-- size: S (under an hour), M (a few hours) or L (a day or more)
+  work (build, test, type check) - omit it when nothing sensible exists.
+  Every part of it must exist (check package.json scripts, Makefile, venv
+  paths) and pass on the current tree: leave out checks that already fail
+  for reasons unrelated to this task. A wrong verify parks finished work.
+- a last line: size S (under an hour), M (a few hours) or L (a day or more)
+Keep the whole plan under about 300 words, labels in the task's language too.
+
+If the file already has a Plan, the new one REPLACES it: write it whole and
+self-contained, never "steps 1-7 as before" or "in addition to the previous
+plan" - the board shows only the latest plan, older ones are folded away.
 
 If something must be decided by the owner BEFORE the work can start, also
 append "## Questions (agent · {now})" with numbered, specific questions,
 each answerable in one sentence. Ask only what you cannot decide from the
-code and the conventions; otherwise decide and note the decision in the
-plan. Do not ask whether to proceed.
+code and the conventions; otherwise decide and note it under Decided. Do
+not ask whether to proceed.
 """
 
 RUN = """MODE: IMPLEMENT. Carry out the request following the Plan and the owner's
@@ -106,6 +128,10 @@ tasks/ directory - with a message prefixed "task {id}: ". Then append:
 - commits: <short hashes>
 - how to check it (URL, command, what to look at)
 - anything left out, and why
+- only when the verify command from the frontmatter cannot work (a missing
+  script, a check that already failed before your change): a last line
+  "verify: <corrected command>" - the runner uses it instead
+Keep it under about 150 words: the owner reads it on a phone.
 
 If - and only if - you genuinely cannot proceed without the owner (a
 decision, missing access, a request that contradicts the code), do not
@@ -116,9 +142,13 @@ questions, and end your final message with a single line containing exactly:
 """
 
 
+def task_language() -> str:
+    return CFG["FRACTAL_TASK_LANG"].strip() or "the language of the owner's request (the text before the first heading)"
+
+
 def build_prompt(task: dict, root: str, mode: str) -> str:
     fields = {"root": root, "path": task["path"], "id": task["id"], "title": task["title"],
-              "now": T.now(), "marker": NEED_ATTENTION}
+              "now": T.now(), "marker": NEED_ATTENTION, "lang": task_language()}
     return COMMON.format(**fields) + "\n" + (TRIAGE if mode == "triage" else RUN).format(**fields)
 
 
@@ -150,8 +180,23 @@ class Stats:
                 f"out {self.output_tokens:,} (cache read {self.cache_read:,})")
 
 
+def tool_output(block: dict) -> str:
+    """The head of a tool result, indented under its call."""
+    c = block.get("content")
+    if isinstance(c, list):
+        c = "\n".join(x.get("text", "") for x in c if isinstance(x, dict) and x.get("type") == "text")
+    lines = str(c or "").rstrip().splitlines()
+    if not lines:
+        return ""
+    head = [ln[:240] for ln in lines[:OUTPUT_LINES]]
+    if len(lines) > OUTPUT_LINES:
+        head.append(f"... {len(lines) - OUTPUT_LINES} more lines")
+    mark = "✗ " if block.get("is_error") else ""
+    return "\n".join(f"           │ {mark if i == 0 else ''}{ln}" for i, ln in enumerate(head))
+
+
 def describe(ev: dict, stats: Stats) -> str | None:
-    """One human line per interesting stream-json event, or None."""
+    """A few human lines per interesting stream-json event, or None."""
     t = ev.get("type")
     if t == "system" and ev.get("subtype") == "init":
         return f"session started (model {ev.get('model', '?')})"
@@ -161,16 +206,21 @@ def describe(ev: dict, stats: Stats) -> str | None:
             if block.get("type") == "tool_use":
                 stats.tool_calls += 1
                 inp = block.get("input") or {}
-                detail = str(inp.get("file_path") or inp.get("command") or inp.get("pattern")
-                             or inp.get("description") or "").replace("\n", " ")[:100]
+                detail = str(inp.get("command") or inp.get("file_path") or inp.get("pattern")
+                             or inp.get("description") or inp.get("prompt") or "").replace("\n", " ⏎ ")[:300]
                 out.append(f"#{stats.tool_calls:<3} {block.get('name', '?')}  {detail}".rstrip())
             elif block.get("type") == "text":
                 text = (block.get("text") or "").strip()
                 if text:
                     if USAGE_LIMIT_RE.search(text):
                         stats.limit_hit = True
-                    out.append(text[:400].replace("\n", "\n           "))
+                    out.append(text[:3000].replace("\n", "\n           "))
         return "\n".join(out) if out else None
+    if t == "user":
+        content = (ev.get("message") or {}).get("content")
+        outs = [tool_output(b) for b in content if isinstance(b, dict) and b.get("type") == "tool_result"] \
+            if isinstance(content, list) else []
+        return "\n".join(o for o in outs if o) or None
     if t == "result":
         stats.absorb_result(ev)
         dur = ev.get("duration_ms")
@@ -179,10 +229,74 @@ def describe(ev: dict, stats: Stats) -> str | None:
     return None
 
 
-def run_claude(prompt: str, root: str, log_path: str, timeout_s: int, max_turns: int) -> tuple[bool, Stats]:
+def conversation(project: str, task_id: str) -> tuple[list[str], str]:
+    """(claude arguments, session id) that continue the task's own
+    conversation, the one its interactive session ("Claude úkolu") shows.
+    A conversation takes one writer at a time: its window closes now and
+    the board resumes it on the next "Claude úkolu", run included."""
+    rec = T.task_session(project, task_id)
+    if rec.get("session"):
+        subprocess.run(["tmux", "kill-session", "-t", "=" + rec["session"]], capture_output=True)
+    sid = rec.get("id")
+    if sid and T.has_transcript(sid):
+        args = ["--resume", sid]
+    else:
+        sid = str(uuid.uuid4())
+        args = ["--session-id", sid]
+    T.set_task_session(project, task_id, session=None, id=sid)
+    return args, sid
+
+
+# --- notes the owner adds while the agent works ---------------------------------
+# The board accepts notes during a run. Claude Code hooks hand them to the
+# running agent: after each tool call (PostToolUse adds them to the context)
+# and when it wants to finish (Stop blocks once, with the notes as the reason).
+
+INBOX_DIR = os.path.join(HOME, ".config", "fractal", "inbox")
+
+
+def open_inbox(project: str, task: dict, log_path: str) -> tuple[str, list[str]]:
+    """(state file, claude arguments) of the hooks; sections already in the
+    file count as read, the prompt points the agent to them."""
+    os.makedirs(INBOX_DIR, exist_ok=True)
+    state = os.path.join(INBOX_DIR, f"{project}-{task['id']}.json")
+    with open(state, "w", encoding="utf-8") as f:
+        json.dump({"path": task["path"], "seen": len(task["sections"]), "log": log_path}, f)
+    hook = [{"hooks": [{"type": "command", "command": f"{sys.executable} {os.path.realpath(__file__)} --inbox {state}"}]}]
+    return state, ["--settings", json.dumps({"hooks": {"PostToolUse": hook, "Stop": hook}})]
+
+
+def inbox_hook(state_path: str) -> int:
+    try:
+        event = json.load(sys.stdin).get("hook_event_name", "")
+        with open(state_path, encoding="utf-8") as f:
+            st = json.load(f)
+        sections = T.load(st["path"])["sections"]
+    except (OSError, ValueError, KeyError):
+        return 0
+    new = [s["text"] for s in sections[st["seen"]:]
+           if s["kind"] in ("Answers", "Feedback") and not s["head"].startswith(("agent", "runner"))]
+    st["seen"] = len(sections)
+    with open(state_path, "w", encoding="utf-8") as f:
+        json.dump(st, f)
+    if not new:
+        return 0
+    text = ("The task owner just added a note (it is in the task file too). Take it into account now:\n\n"
+            + "\n\n---\n\n".join(new))
+    with open(st["log"], "a", encoding="utf-8") as log:
+        log.write(f"{clock()} 📨 note from the owner delivered: {new[-1][:200].replace(chr(10), ' ')}\n")
+    if event == "Stop":
+        print(json.dumps({"decision": "block", "reason": text}))
+    else:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}))
+    return 0
+
+
+def run_claude(prompt: str, root: str, log_path: str, timeout_s: int, max_turns: int,
+               extra: list[str]) -> tuple[bool, Stats]:
     exe = shutil.which("claude") or os.path.join(HOME, ".local", "bin", "claude")
     cmd = [exe, "-p", "--dangerously-skip-permissions", "--output-format", "stream-json",
-           "--verbose", "--max-turns", str(max_turns)]
+           "--verbose", "--max-turns", str(max_turns), *extra]
     env = dict(os.environ, PATH=os.path.join(HOME, ".local", "bin") + ":" + os.environ.get("PATH", ""))
     env.pop("ANTHROPIC_API_KEY", None)          # subscription auth, like the interactive windows
     env.pop("CLAUDECODE", None)                 # allow starting from inside another agent session
@@ -261,20 +375,22 @@ def notify(text: str) -> None:
         pass
 
 
-def plan_verify_line(task: dict) -> str:
-    """A "verify: <cmd>" line from the newest Plan section, if the agent wrote one."""
+def plan_verify_line(task: dict, kind: str = "Plan") -> str:
+    """A "verify: <cmd>" line from the newest Plan (or Result) section, if the agent wrote one."""
     for s in reversed(task["sections"]):
-        if s["kind"] == "Plan":
+        if s["kind"] == kind:
             m = re.search(r"^\s*-?\s*`?verify:`?\s*`?(.+?)`?\s*$", s["text"], re.M | re.I)
             return m.group(1).strip() if m else ""
     return ""
 
 
 def main() -> int:
+    if sys.argv[1:2] == ["--inbox"] and len(sys.argv) == 3:
+        return inbox_hook(sys.argv[2])
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("project")
     ap.add_argument("task_id")
-    ap.add_argument("mode", choices=("triage", "run"))
+    ap.add_argument("mode", choices=("triage", "run", "verify"))
     ap.add_argument("--keep", type=int, default=KEEP_WINDOW, help="seconds to keep the window open afterwards")
     a = ap.parse_args()
 
@@ -303,8 +419,18 @@ def main() -> int:
     questions_before = sum(1 for s in task["sections"] if s["kind"] == "Questions")
     started = time.monotonic()
 
-    # 2. the session
-    ok, stats = run_claude(build_prompt(task, root, a.mode), root, log_path, timeout_s, MAX_TURNS[a.mode])
+    # 2. the session (verify alone needs none)
+    sid = ""
+    if a.mode == "verify":
+        ok, stats = True, Stats()
+    else:
+        extra, sid = conversation(a.project, task["id"])
+        inbox, hooks = open_inbox(a.project, task, log_path)
+        try:
+            ok, stats = run_claude(build_prompt(task, root, a.mode), root, log_path, timeout_s,
+                                   MAX_TURNS[a.mode], extra + hooks)
+        finally:
+            os.unlink(inbox)
     took = int(time.monotonic() - started)
 
     # 3. what did the agent leave behind?
@@ -315,17 +441,19 @@ def main() -> int:
     head_after = T.git(root, "rev-parse", "HEAD").stdout.strip()
     commits = ""
     if head_before and head_after and head_before != head_after:
-        commits = T.git(root, "log", "--oneline", f"{head_before}..{head_after}").stdout.strip()
+        # the agent's own commits: the board's bookkeeping of other tasks touches tasks/ only
+        commits = T.git(root, "log", "--oneline", f"{head_before}..{head_after}", "--",
+                        ".", f":(exclude){T.TASKS_DIRNAME}/").stdout.strip()
 
     notes = []
     if a.mode == "triage":
         if ok and has_plan:
             status = "review"
-            if not task.get("verify"):
-                v = plan_verify_line(task)
-                if v:
-                    task["verify"] = v
-                    notes.append(f"verify taken from the plan: `{v}`")
+            # the newest plan wins: a re-plan may widen what has to pass
+            v = plan_verify_line(task)
+            if v and v != task.get("verify"):
+                task["verify"] = v
+                notes.append(f"verify taken from the plan: `{v}`")
         else:
             status = "need-attention"
             notes.append("the agent produced no plan" if ok else "the session failed")
@@ -337,6 +465,11 @@ def main() -> int:
             status = "need-attention"
             notes.append("the agent asked questions")
         else:
+            # the agent may have found the planned verify unusable and corrected it
+            v = plan_verify_line(task, "Result") if a.mode == "run" else ""
+            if v and v != task.get("verify"):
+                task["verify"] = v
+                notes.append(f"verify taken from the result: `{v}`")
             if task.get("verify"):
                 vok, tail = run_verify(task["verify"], root, log_path)
                 if vok:
@@ -347,15 +480,19 @@ def main() -> int:
                     notes.append("verify failed")
             else:
                 status = "review"
-            if not has_result:
+            if not has_result and a.mode == "run":
                 notes.append("no Result section was written")
     if stats.limit_hit:
         notes.append("usage limit hit during the session")
 
     # 4. record the run in the file, set the status, commit the file
-    meta = [f"- mode: {a.mode}", f"- outcome: {status}",
-            f"- duration: {took // 60} min {took % 60} s", f"- {stats.line()}",
-            f"- log: {os.path.relpath(log_path, root)}"]
+    took = int(time.monotonic() - started)              # the verify included
+    meta = [f"- mode: {a.mode}", f"- outcome: {status}", f"- duration: {took // 60} min {took % 60} s"]
+    if a.mode != "verify":
+        meta.append(f"- {stats.line()}")
+    meta.append(f"- log: {os.path.relpath(log_path, root)}")
+    if sid:
+        meta.append(f"- conversation: {sid}")
     if stats.cost:
         meta.append(f"- cost: ${stats.cost:.2f}")
     if commits:
@@ -374,6 +511,7 @@ def main() -> int:
           f"{DIM}{took // 60} min · {stats.line()}{' · commit ' + sha if sha else ''}{RESET}")
 
     what = "plan is ready" if (a.mode == "triage" and status == "review") else \
+           "verify passed, ready for review" if (a.mode == "verify" and status == "review") else \
            "work is ready for review" if status == "review" else "needs your attention"
     notify(f"{'✓' if status == 'review' else '⚠'} {a.project} · task {task['id']} {task['title']}: {what}"
            f"{' (' + '; '.join(notes) + ')' if notes and status != 'review' else ''}\n{URL}tasks.html#{a.project}/{task['id']}")

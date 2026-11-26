@@ -28,6 +28,9 @@ DEFAULTS = {
     "FRACTAL_UPLOADS": os.path.join(HOME, "uploads"),
     # autostart memory and other small state files
     "FRACTAL_STATE_DIR": os.path.join(HOME, ".config", "fractal"),
+    # per-session task files (<session id>.json) a Claude Code mod writes;
+    # the sessions card shows them when present
+    "FRACTAL_SESSION_TASK_DIR": os.path.join(HOME, ".local", "state", "claude-task"),
     # loopback ports of the helper services (nginx proxies them)
     "FRACTAL_CTL_PORT": "7691",
     "FRACTAL_FILES_PORT": "7692",
@@ -38,6 +41,9 @@ DEFAULTS = {
     "FRACTAL_AGENT": "claude",
     "FRACTAL_AGENT_FLAGS": "--dangerously-skip-permissions",
     "FRACTAL_AGENT_WINDOW": "claude",
+    # language of what agents write into task files and say in task sessions;
+    # empty = the language of the owner's request
+    "FRACTAL_TASK_LANG": "",
     # wireless interface for the Wi-Fi tile; empty = autodetect
     "FRACTAL_WIFI_IFACE": "",
     # Telegram bot (optional): allowed numeric user IDs, token file, watch interval

@@ -18,23 +18,30 @@ first user can put it into the config; nothing else works in that state.
 
 Commands (project = name from the registry):
     /status                    up/down of every controllable project + machine
-    /projects                  all registered projects, what each can do
+    /projects [folder]         folders (registry groups, matched by name or by the
+                               directory under ~/projects), or the projects of one;
+                               inline buttons switch the chat's context
+    /project <project>         chat in the project's context (claude in its root);
+                               also the default project for /ask /send /run /task
+    /chat [text]               back to the general chat (claude in $HOME)
+    /new                       start the current context's conversation over
     /start <project>           run the registry start command, report the result
     /stop <project>            same for stop
     /run <project> [hook]      run a named hook; without a hook: list them
     /send <project> <text>     paste text into the project's agent tmux window
     /ask <project> <question>  headless question; the answer is streamed into
                                one message that is edited while it grows
-    /use <project>             remember a default project for this chat, after
-                               which /ask, /send, /run work without the name
+    /use <project>             the older name of /project
     /task <project> <text>     new task on the project's board (fractal-tasks);
                                plain text starting with "task" or "úkol" does the same
     /tasks [project]           what the board has for you: open questions, work to review
-    /help                      built-in text, or $FRACTAL_STATE_DIR/telegram-help.txt
-                               if that file exists (write your own, in your language)
-    <plain text>               same as /send to the default project - with a
-                               sendPrefix in the registry (e.g. "/braindump ")
-                               the chat becomes a capture inbox
+    /help [topic]              built-in text, or $FRACTAL_STATE_DIR/telegram-help.txt
+                               if that file exists (write your own, in your language);
+                               lines "## <key> | <label>" split it into topics shown
+                               as buttons under the overview. "help" alone works too
+    <plain text>               the next message of the conversation in the chat's
+                               context (fractal-ctl POST /chat, each message resumes
+                               the context's last session)
 
 Notifications: every FRACTAL_TELEGRAM_WATCH seconds (0 = off) the bot reads
 /ctl/state and tells every allowed user when a project changed between up
@@ -74,6 +81,7 @@ USERS = {int(u) for u in re.split(r"[\s,]+", CFG["FRACTAL_TELEGRAM_USERS"].strip
 WATCH = int(CFG["FRACTAL_TELEGRAM_WATCH"] or 0)
 DEFAULTS_FILE = os.path.join(STATE_DIR, "telegram-defaults.json")   # chat -> default project
 HELP_FILE = os.path.join(STATE_DIR, "telegram-help.txt")             # optional custom /help
+CHATS_FILE = os.path.join(STATE_DIR, "telegram-chats.json")          # chat -> {"ctx", "sessions"}
 
 POLL_TIMEOUT = 50          # long poll; Telegram closes at 50 s anyway
 TOGGLE_WAIT = 60           # fractal-ctl waits 45 s for the port, add slack
@@ -85,6 +93,8 @@ TG_MAX = 4000              # Telegram cuts at 4096; leave room for the cursor
 _token = ""
 _seen_strangers: set[int] = set()
 _defaults: dict[str, str] = {}
+_chats: dict[str, dict] = {}
+_chat_turn: dict[str, threading.Lock] = {}     # one chat turn at a time per chat
 _lock = threading.Lock()
 
 
@@ -117,22 +127,30 @@ def chunks(text: str, n: int = TG_MAX) -> list[str]:
     return out + [text]
 
 
-def say(chat: int, text: str, mono: bool = False) -> int | None:
+def say(chat: int, text: str, mono: bool = False, buttons: list | None = None) -> int | None:
     """Send plain text (or a <pre> block); long texts are split. Returns the
-    last message id, so a streaming answer can be edited afterwards."""
+    last message id, so a streaming answer can be edited afterwards. buttons:
+    rows of (label, callback data), shown under the last part."""
     mid = None
-    for part in chunks(text):
+    parts = chunks(text)
+    for i, part in enumerate(parts):
+        extra = {"reply_markup": keyboard(buttons)} if buttons and i == len(parts) - 1 else {}
         if mono:
-            r = tg("sendMessage", chat_id=chat, text=f"<pre>{html.escape(part)}</pre>", parse_mode="HTML")
+            r = tg("sendMessage", chat_id=chat, text=f"<pre>{html.escape(part)}</pre>", parse_mode="HTML", **extra)
         else:
-            r = tg("sendMessage", chat_id=chat, text=part)
+            r = tg("sendMessage", chat_id=chat, text=part, **extra)
         mid = r.get("message_id")
     return mid
 
 
-def edit(chat: int, mid: int, text: str) -> None:
+def keyboard(rows: list) -> dict:
+    return {"inline_keyboard": [[{"text": t, "callback_data": d} for t, d in row] for row in rows]}
+
+
+def edit(chat: int, mid: int, text: str, buttons: list | None = None) -> None:
+    extra = {"reply_markup": keyboard(buttons)} if buttons else {}
     try:
-        tg("editMessageText", chat_id=chat, message_id=mid, text=text[:TG_MAX + 90])
+        tg("editMessageText", chat_id=chat, message_id=mid, text=text[:TG_MAX + 90], **extra)
     except RuntimeError as e:
         if "not modified" not in str(e):
             raise
@@ -167,6 +185,11 @@ def _api(base: str, who: str, method: str, path: str, body: dict | None, timeout
 def registry() -> list[dict]:
     with open(REGISTRY, encoding="utf-8") as f:
         return json.load(f).get("projects", [])
+
+
+def registry_groups() -> list[str]:
+    with open(REGISTRY, encoding="utf-8") as f:
+        return [g for g in json.load(f).get("groups", []) if isinstance(g, str)]
 
 
 def project(name: str) -> dict:
@@ -237,34 +260,63 @@ def pick_project(chat: int, args: list[str], need_rest: bool) -> tuple[dict, lis
         return project(d), args, ""
     if args and not need_rest:
         return {}, args, f"'{args[0]}' is not a registered project (/projects lists them)"
-    return {}, args, "which project? give its name first or set one with /use <project>"
+    return {}, args, "which project? give its name first or switch to one with /project <project>"
 
 
 # --- commands -----------------------------------------------------------------
 
 HELP = """fractal bot
 
+Plain text is a chat with Claude on this machine - in general (in $HOME) or
+in the context of one project. Each context remembers its conversation.
+/chat – general chat · /project <p> – chat in project p
+/projects – folders; /projects <folder> – the projects in one, tap to switch
+/new – start the current conversation over
+
 /status – what is up, what is down
-/projects – every registered project
 /start <p> · /stop <p> – toggle a project's stack
 /run <p> [hook] – run a named action (no hook: list them)
-/send <p> <text> – paste text into the project's agent window (no answer here)
-/ask <p> <question> – headless question to the agent, answer comes back here
-/use <p> – default project for this chat, then omit <p> everywhere
+/send <p> <text> – paste text into the project's live agent window (no answer here)
+/ask <p> <question> – one-off headless question, answer comes back here
 /task <p> <text> – new task on the board; "task …" or "úkol …" without the slash works too
 /tasks [p] – what the board is waiting on you for
-plain text – same as /send to the default project
+<p> may be left out after /project
 
 Dashboard: {url}"""
 
 
-def cmd_help(chat: int, _args: list[str]) -> None:
+HELP_WORDS = ("help", "napoveda", "nápověda", "pomoc")   # a bare word, for dictation
+
+
+def help_topics() -> tuple[str, list[tuple[str, str, str]]]:
+    """(overview, [(key, button label, text)]). The help file may be split
+    into topics by lines "## <key> | <button label>"; what comes before the
+    first one is the overview /help shows, with a button per topic."""
     try:
         with open(HELP_FILE, encoding="utf-8") as f:
-            text = f.read().strip()
+            raw = f.read()
     except OSError:
-        text = HELP
-    say(chat, text.replace("{url}", URL))
+        raw = HELP
+    raw = raw.replace("{url}", URL)
+    parts = re.split(r"^## +(\S+) *\| *(.+?) *$", raw, flags=re.M)
+    topics = [(parts[i].lower(), parts[i + 1], parts[i + 2].strip()) for i in range(1, len(parts) - 2, 3)]
+    return parts[0].strip(), topics
+
+
+def help_view(chat: int, key: str = "") -> tuple[str, list]:
+    overview, topics = help_topics()
+    where = f"📍 {ctx_line(chat)}"
+    for k, label, text in topics:
+        if key and fold(key) in (fold(k), fold(label)):
+            return f"{label}\n\n{text}", [[("« help", "h:")]]
+    btns = [(label, f"h:{k}") for k, label, _ in topics]
+    rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
+    return f"{overview}\n\n{where}", rows
+
+
+def cmd_help(chat: int, args: list[str]) -> None:
+    text, rows = help_view(chat, " ".join(args))
+    say(chat, text, buttons=rows or None)
 
 
 def cmd_status(chat: int, _args: list[str]) -> None:
@@ -292,30 +344,116 @@ def cmd_status(chat: int, _args: list[str]) -> None:
     say(chat, text, mono=True)
 
 
-def cmd_projects(chat: int, _args: list[str]) -> None:
-    d = _defaults.get(str(chat))
+# --- folders and the project picker -------------------------------------------
+# A folder is a registry group (the dashboard's sections). Each usually lives
+# in one directory under ~/projects, so "/projects ac" finds "Acme
+# Clients" as well as "/projects acm" does.
+
+PROJECTS_DIR = os.path.join(os.path.expanduser("~"), "projects")
+
+
+def fold(t: str) -> str:
+    """lowercase, no diacritics, no spaces: "Home Lab" -> "homelab" """
+    import unicodedata
+    t = unicodedata.normalize("NFKD", t.lower())
+    return "".join(c for c in t if c.isalnum())
+
+
+def folders() -> list[dict]:
+    """[{"name", "dir", "projects"}] in dashboard order."""
+    by: dict[str, list[dict]] = {}
+    for p in registry():
+        by.setdefault(p.get("group") or "other", []).append(p)
+    order = [g for g in registry_groups() if g in by] + sorted(g for g in by if g not in registry_groups())
+    out = []
+    for g in order:
+        dirs: dict[str, int] = {}
+        for p in by[g]:
+            rel = os.path.relpath(os.path.expanduser(p.get("root") or "~"), PROJECTS_DIR)
+            if not rel.startswith(".."):
+                d = rel.split(os.sep)[0]
+                dirs[d] = dirs.get(d, 0) + 1
+        out.append({"name": g, "dir": max(dirs, key=dirs.get) if dirs else "",
+                    "projects": sorted(by[g], key=lambda p: p["name"])})
+    return out
+
+
+def find_folder(q: str) -> tuple[int, dict] | tuple[None, None]:
+    """By group name or directory: exact first, then prefix, then substring."""
+    q = fold(q)
+    fs = folders()
+    for test in (lambda k: k == q, lambda k: k.startswith(q), lambda k: q in k):
+        for i, f in enumerate(fs):
+            if any(test(k) for k in (fold(f["name"]), fold(f["dir"])) if k):
+                return i, f
+    return None, None
+
+
+def caps(p: dict) -> str:
+    c = []
+    if controllable(p):
+        c.append("start/stop")
+    if p.get("hooks"):
+        c.append("run: " + " ".join(sorted(p["hooks"])))
+    return ", ".join(c)
+
+
+def ctx_line(chat: int) -> str:
+    c = chat_ctx(chat)
+    return f"now: chatting in {c}" if c else "now: general chat"
+
+
+def folders_view(chat: int) -> tuple[str, list]:
+    fs = folders()
+    lines = [f"📁 {f['name']}" + (f"  ~/projects/{f['dir']}" if f["dir"] else "") + f"  · {len(f['projects'])}"
+             for f in fs]
+    text = ("Folders - tap one, or /projects <folder>\n\n" + "\n".join(lines)
+            + f"\n\n{ctx_line(chat)}")
+    btns = [(f"{f['name']} ({len(f['projects'])})", f"f:{i}") for i, f in enumerate(fs)]
+    rows = [btns[i:i + 2] for i in range(0, len(btns), 2)] + [[("💬 general chat", "c:")]]
+    return text, rows
+
+
+def folder_view(chat: int, i: int, f: dict) -> tuple[str, list]:
+    cur = chat_ctx(chat)
     lines = []
-    for p in sorted(registry(), key=lambda p: (p.get("group") or "", p["name"])):
-        caps = []
-        if controllable(p):
-            caps.append("start/stop")
-        if p.get("hooks"):
-            caps.append("run: " + " ".join(sorted(p["hooks"])))
-        if p.get("terminal") is not False:
-            caps.append("agent")
-        star = "★ " if p["name"] == d else "  "
-        lines.append(f"{star}{p['name']:<14} {p.get('group') or ''}\n     {', '.join(caps) or '-'}")
-    say(chat, "\n".join(lines) or "registry is empty", mono=True)
+    for p in f["projects"]:
+        title = p.get("title") if p.get("title") and p.get("title") != p["name"] else ""
+        extra = " · ".join(x for x in (title, caps(p)) if x)
+        lines.append(("▶ " if p["name"] == cur else "• ") + p["name"] + (f" – {extra}" if extra else ""))
+    where = f"  ~/projects/{f['dir']}" if f["dir"] else ""
+    text = (f"📁 {f['name']}{where}\n\n" + "\n".join(lines)
+            + f"\n\ntap a project to chat in its context · {ctx_line(chat)}")
+    btns = [(p["name"], f"p:{p['name']}") for p in f["projects"]]
+    rows = [btns[k:k + 3] for k in range(0, len(btns), 3)] + [[("« folders", "F"), ("💬 general chat", "c:")]]
+    return text, rows
 
 
-def cmd_use(chat: int, args: list[str]) -> None:
+def cmd_projects(chat: int, args: list[str]) -> None:
     if not args:
-        d = _defaults.get(str(chat))
-        return say(chat, f"default project: {d}" if d else "no default project set; /use <project>")
+        text, rows = folders_view(chat)
+        return say(chat, text, buttons=rows)
+    i, f = find_folder(" ".join(args))
+    if f is None:
+        if project(args[0]):
+            return say(chat, f"{args[0]} is a project, not a folder - /project {args[0]} switches to it")
+        text, rows = folders_view(chat)
+        return say(chat, f"no folder matches '{' '.join(args)}'\n\n" + text, buttons=rows)
+    text, rows = folder_view(chat, i, f)
+    say(chat, text, buttons=rows)
+
+
+def cmd_project(chat: int, args: list[str]) -> None:
+    if not args:
+        text, rows = folders_view(chat)
+        return say(chat, text, buttons=rows)
     if not project(args[0]):
-        return say(chat, f"'{args[0]}' is not a registered project")
-    set_default(chat, args[0])
-    say(chat, f"default project is now {args[0]}; /ask, /send and /run work without the name")
+        i, f = find_folder(" ".join(args))
+        if f is not None:                          # "/project shop" when shop were only a folder
+            text, rows = folder_view(chat, i, f)
+            return say(chat, text, buttons=rows)
+        return say(chat, f"'{args[0]}' is not a registered project - /projects lists them")
+    say(chat, switch_ctx(chat, args[0]))
 
 
 def cmd_toggle(chat: int, args: list[str], action: str) -> None:
@@ -400,15 +538,22 @@ def cmd_ask(chat: int, args: list[str]) -> None:
     code, data = ctl("POST", f"/agent/{name}/query", {"q": q})
     if code != 202:
         return say(chat, f"✗ {name}: {data.get('error', code)}")
-    jid = data["id"]
-    mid = say(chat, f"◐ {name} is thinking…")
+    stream_answer(chat, f"/agent/{name}/query/{data['id']}", name)
+
+
+def stream_answer(chat: int, poll: str, label: str) -> dict:
+    """Show a fractal-ctl job in one message that is edited while the answer
+    grows; long final answers continue in more messages. Returns the done job
+    ({} when it did not finish)."""
+    mid = say(chat, f"◐ {label} is thinking…")
     shown, last_edit = "", time.monotonic()
     deadline = time.monotonic() + QUERY_WAIT
     while time.monotonic() < deadline:
         time.sleep(1)
-        code, j = ctl("GET", f"/agent/{name}/query/{jid}")
+        code, j = ctl("GET", poll)
         if code != 200:
-            return edit(chat, mid, f"✗ {name}: {j.get('error', code)}")
+            edit(chat, mid, f"✗ {label}: {j.get('error', code)}")
+            return {}
         answer = (j.get("answer") or "").strip()
         if j.get("done"):
             final = answer or "(no answer)"
@@ -418,12 +563,149 @@ def cmd_ask(chat: int, args: list[str]) -> None:
             edit(chat, mid, parts[0])
             for extra in parts[1:]:
                 say(chat, extra)
-            return
+            return j
         # stream: edit the one message while the text grows, but not on every poll
         if answer and answer != shown and time.monotonic() - last_edit >= EDIT_EVERY:
             edit(chat, mid, answer[-TG_MAX:] + " ▍")
             shown, last_edit = answer, time.monotonic()
-    edit(chat, mid, f"✗ {name}: no answer within {QUERY_WAIT // 60} min")
+    edit(chat, mid, f"✗ {label}: no answer within {QUERY_WAIT // 60} min")
+    return {}
+
+
+# --- chat: plain text is a conversation with the agent -----------------------
+# Every chat has a context: "" = general (claude in $HOME) or a project name
+# (claude in the project root). Each context keeps its own conversation, so
+# switching back to a project continues where it was left.
+
+def load_chats() -> None:
+    global _chats
+    try:
+        with open(CHATS_FILE, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        raw = {}
+    _chats = {}
+    for k, v in (raw.items() if isinstance(raw, dict) else []):
+        v = dict(v) if isinstance(v, dict) else {}
+        sessions = dict(v.get("sessions") or {})
+        if v.get("session") and "" not in sessions:        # the first format: one session
+            sessions[""] = v["session"]
+        _chats[str(k)] = {"ctx": str(v.get("ctx") or ""), "sessions": sessions}
+
+
+def save_chats() -> None:
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(CHATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(_chats, f, indent=1)
+    except OSError as e:
+        log(f"chats: could not save: {e}")
+
+
+def chat_state(chat: int) -> dict:
+    return _chats.setdefault(str(chat), {"ctx": "", "sessions": {}})
+
+
+def chat_ctx(chat: int) -> str:
+    c = _chats.get(str(chat), {}).get("ctx") or ""
+    return c if not c or project(c) else ""      # a project that left the registry
+
+
+def set_session(chat: int, ctx: str, sid: str) -> None:
+    with _lock:
+        chat_state(chat)["sessions"][ctx] = sid
+        save_chats()
+
+
+def switch_ctx(chat: int, name: str) -> str:
+    """Make `name` ("" = general) the chat's context; a project also becomes
+    the default project of /ask, /send, /run and /task."""
+    with _lock:
+        st = chat_state(chat)
+        st["ctx"] = name
+        save_chats()
+        has = bool(st["sessions"].get(name))
+    cont = "continuing the last conversation" if has else "new conversation"
+    if not name:
+        return f"💬 general chat ({cont}) - just write. /projects picks a project, /new starts over"
+    set_default(chat, name)
+    p = project(name)
+    root = (p.get("root") or "~").replace(os.path.expanduser("~"), "~", 1)
+    return (f"📂 {name} ({cont}) - Claude works in {root}. Just write; "
+            f"/new starts over, /chat goes back to the general chat")
+
+
+def cmd_chat(chat: int, args: list[str]) -> None:
+    if chat_ctx(chat) or not args:
+        say(chat, switch_ctx(chat, ""))
+    if args:                                   # "/chat what is the weather" = general + first message
+        chat_turn(chat, " ".join(args))
+
+
+def cmd_new(chat: int, args: list[str]) -> None:
+    ctx = chat_ctx(chat)
+    set_session(chat, ctx, "")
+    if args:
+        return chat_turn(chat, " ".join(args))
+    say(chat, f"💬 new conversation{' in ' + ctx if ctx else ''} - just write")
+
+
+def chat_turn(chat: int, text: str) -> None:
+    """One message of the conversation. Turns run one after another: a
+    message written while Claude still answers waits for that answer, so it
+    resumes the conversation that already contains it."""
+    with _lock:
+        turn = _chat_turn.setdefault(str(chat), threading.Lock())
+    if not turn.acquire(blocking=False):
+        say(chat, "⏳ queued after the current answer")
+        turn.acquire()
+    try:
+        ctx = chat_ctx(chat)
+        session = chat_state(chat)["sessions"].get(ctx) or ""
+        code, data = ctl("POST", "/chat", {"q": text, "session": session, "project": ctx})
+        if code != 202:
+            return say(chat, f"✗ chat: {data.get('error', code)}")
+        j = stream_answer(chat, f"/chat/{data['id']}", f"Claude · {ctx}" if ctx else "Claude")
+        if j.get("session"):
+            set_session(chat, ctx, j["session"])
+    finally:
+        turn.release()
+
+
+def handle_button(cq: dict) -> None:
+    """A tap on a picker button: the message turns into the next view."""
+    user = (cq.get("from") or {}).get("id")
+    msg = cq.get("message") or {}
+    chat, mid, data = (msg.get("chat") or {}).get("id"), msg.get("message_id"), cq.get("data") or ""
+    if user not in USERS or chat is None:
+        return
+    note = ""
+    try:
+        if data.startswith("h:"):
+            text, rows = help_view(chat, data[2:])
+            edit(chat, mid, text, rows or None)
+        elif data == "F":
+            text, rows = folders_view(chat)
+            edit(chat, mid, text, rows)
+        elif data.startswith("f:") and data[2:].isdigit():
+            fs = folders()
+            i = int(data[2:])
+            if i < len(fs):
+                text, rows = folder_view(chat, i, fs[i])
+                edit(chat, mid, text, rows)
+        elif data.startswith("p:") and project(data[2:]):
+            note = "→ " + data[2:]
+            edit(chat, mid, switch_ctx(chat, data[2:]))
+        elif data == "c:":
+            note = "→ general chat"
+            edit(chat, mid, switch_ctx(chat, ""))
+    except Exception as e:                                    # noqa: BLE001
+        log(f"button {data} failed: {type(e).__name__}: {e}")
+        note = "✗ " + str(e)[:150]
+    try:
+        tg("answerCallbackQuery", callback_query_id=cq["id"], text=note)
+    except Exception as e:                                    # noqa: BLE001
+        log(f"answerCallbackQuery: {e}")
 
 
 TASK_WORDS = ("task", "ukol", "úkol")
@@ -475,7 +757,7 @@ COMMANDS = {
     "help": cmd_help,
     "status": cmd_status, "s": cmd_status,
     "projects": cmd_projects, "list": cmd_projects,
-    "use": cmd_use,
+    "use": cmd_project,                        # the older name of /project
     "start": lambda c, a: cmd_toggle(c, a, "start"),
     "stop": lambda c, a: cmd_toggle(c, a, "stop"),
     "run": cmd_run,
@@ -483,20 +765,26 @@ COMMANDS = {
     "ask": cmd_ask,
     "task": cmd_task, "ukol": cmd_task,
     "tasks": cmd_tasks, "ukoly": cmd_tasks,
+    "chat": cmd_chat,
+    "new": cmd_new,
+    "project": cmd_project, "p": cmd_project,
+    "folders": cmd_projects, "slozky": cmd_projects,
 }
 
 MENU = [
+    ("help", "what the bot can do, by topic"),
+    ("chat", "general chat with Claude (not in a project)"),
+    ("project", "chat in a project's context: /project <p>"),
+    ("projects", "folders and their projects: /projects [folder]"),
+    ("new", "start a fresh conversation"),
     ("status", "what is up and what is down"),
-    ("projects", "every registered project"),
     ("start", "start a project: /start <p>"),
     ("stop", "stop a project: /stop <p>"),
     ("run", "run a named action: /run <p> [hook]"),
     ("send", "paste text into the agent window"),
     ("ask", "headless question to the agent"),
-    ("use", "default project for this chat"),
     ("task", "new task on the board: /task <p> <text>"),
     ("tasks", "what the board is waiting on you for"),
-    ("help", "command list"),
 ]
 
 
@@ -522,13 +810,12 @@ def handle(msg: dict) -> None:
         head, _, rest = text.partition(" ")
         if head.lower().strip(",.:;") in TASK_WORDS and rest.strip():
             return cmd_task(chat, rest.split())
-        # plain text is a /send to the chat's default project; the first word
-        # is deliberately NOT parsed as a project name here - a thought that
-        # starts with "shop ..." must not land in the shop session
-        d = _defaults.get(str(chat))
-        if not (d and project(d)):
-            return say(chat, "no default project - set one with /use <project>, or use /send <project> <text>; /help")
-        return cmd_send(chat, [d, text])
+        if text.lower().strip(" ,.!?") in HELP_WORDS:
+            return cmd_help(chat, [])
+        # everything else is the conversation, in the chat's context; the
+        # first word is deliberately NOT parsed as a project name - a thought
+        # that starts with "shop ..." must not switch anything
+        return chat_turn(chat, text)
     words = text.split()
     cmd = words[0][1:].split("@")[0].lower()       # "/ask@my_bot" in some clients
     fn = COMMANDS.get(cmd)
@@ -623,6 +910,7 @@ def main() -> None:
     if not _token:
         sys.exit(f"no bot token: run `fractal-telegram configure <token>` (writes {TOKEN_FILE})")
     load_defaults()
+    load_chats()
 
     me = None
     while me is None:
@@ -653,7 +941,7 @@ def main() -> None:
     while True:
         try:
             updates = tg("getUpdates", http_timeout=POLL_TIMEOUT + 10, offset=offset,
-                         limit=20, allowed_updates=["message"], timeout=POLL_TIMEOUT)
+                         limit=20, allowed_updates=["message", "callback_query"], timeout=POLL_TIMEOUT)
         except Exception as e:                                # noqa: BLE001
             log(f"getUpdates: {type(e).__name__}: {e}; retrying in 5 s")
             time.sleep(5)
@@ -664,6 +952,8 @@ def main() -> None:
             if msg:
                 # each command in its own thread: a 5-minute /ask must not block /status
                 threading.Thread(target=handle, args=(msg,), daemon=True).start()
+            if u.get("callback_query"):
+                threading.Thread(target=handle_button, args=(u["callback_query"],), daemon=True).start()
 
 
 if __name__ == "__main__":

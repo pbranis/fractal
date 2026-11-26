@@ -63,7 +63,7 @@ INTERNAL = ("path", "file", "request", "sections", "body", "run")
 STATE_FILE = os.path.join(STATE_DIR, "tasks-state.json")      # per-project board settings
 
 _FRONT = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*\n?", re.S)
-_SECTION = re.compile(r"^## (Plan|Questions|Answers|Feedback|Result|Run|Verify|Error)\b(.*)$", re.M)
+_SECTION = re.compile(r"^## (Plan|Questions|Answers|Feedback|Result|Run|Verify|Deploy|Error)\b(.*)$", re.M)
 
 
 def now() -> str:
@@ -321,6 +321,42 @@ def commit_task_file(root: str, path: str, message: str) -> str:
     return git(root, "rev-parse", "--short", "HEAD").stdout.strip()
 
 
+# --- a task's own commits, and whether a ref has them ---------------------------
+# The agent commits with the prefix "task <id>: "; the board's own bookkeeping
+# touches tasks/ only and does not count. Whether a ref (the upstream, the
+# production's commit) has a commit is decided by patch id, not ancestry: a
+# task deployed on its own reaches the remote as a cherry-picked copy.
+
+def task_commits(root: str, task_id: str, head: str = "HEAD") -> list[tuple[str, str, str]]:
+    """(hash, short hash, subject) of the task's own commits on head, oldest first."""
+    r = git(root, "log", "--reverse", "--format=%H %h %s", "--grep", f"^task {task_id}: ", head,
+            "--", ".", f":(exclude){TASKS_DIRNAME}/")
+    return [tuple(ln.split(" ", 2)) for ln in r.stdout.splitlines() if ln.count(" ") >= 2]
+
+
+def missing_from(root: str, ref: str, head: str = "HEAD") -> set[str]:
+    """Hashes of the commits on head whose change ref does not have."""
+    r = git(root, "cherry", ref, head)
+    return {ln[2:].strip() for ln in r.stdout.splitlines() if ln.startswith("+ ")}
+
+
+def upstream(root: str) -> tuple[str, str]:
+    """(remote, branch) the current branch pushes to, or ("", "")."""
+    r = git(root, "rev-parse", "--abbrev-ref", "@{upstream}").stdout.strip()
+    remote, _, branch = r.partition("/")
+    return (remote, branch) if branch else ("", "")
+
+
+def fetch_upstream(root: str) -> bool:
+    """Refresh the remote-tracking ref of the upstream. Through the push URL:
+    a repo may fetch over https without credentials but push over ssh."""
+    remote, branch = upstream(root)
+    if not branch:
+        return False
+    url = git(root, "remote", "get-url", "--push", remote).stdout.strip() or remote
+    return git(root, "fetch", "-q", url, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}").returncode == 0
+
+
 # --- board settings (per project, outside the repo) ---------------------------
 
 def load_state() -> dict:
@@ -339,9 +375,17 @@ def save_state(state: dict) -> None:
     os.replace(tmp, STATE_FILE)
 
 
+# machine-local, they name hosts: deploy_check prints the commit the production
+# runs, deploy_prepare readies an isolated checkout for the verify (links the
+# dependencies), deploy_run deploys what was pushed
+DEPLOY_SETTINGS = ("deploy_check", "deploy_prepare", "deploy_run")
+
+
 def project_settings(name: str) -> dict:
     s = load_state().get("projects", {}).get(name, {})
-    return {"auto": bool(s.get("auto", False)), "auto_triage": bool(s.get("auto_triage", True))}
+    return {"auto": bool(s.get("auto", False)), "auto_triage": bool(s.get("auto_triage", True)),
+            **{k: str(s.get(k) or "") for k in DEPLOY_SETTINGS}}
+
 
 
 def set_project_setting(name: str, key: str, value) -> dict:
@@ -349,3 +393,36 @@ def set_project_setting(name: str, key: str, value) -> dict:
     state.setdefault("projects", {}).setdefault(name, {})[key] = value
     save_state(state)
     return project_settings(name)
+
+
+# --- the interactive session of a task (machine-local, so not in the file) ----
+
+def task_session(name: str, task_id: str) -> dict:
+    """{"session": tmux session, "id": Claude session id, "driver": bool} or {}.
+    driver = the task is being implemented from that session, not by a run."""
+    return dict(load_state().get("sessions", {}).get(f"{name}/{task_id}", {}))
+
+
+def has_transcript(sid: str) -> bool:
+    """Does Claude Code keep a conversation with this id (any project dir)?"""
+    d = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+    try:
+        return any(os.path.exists(os.path.join(d, x, sid + ".jsonl")) for x in os.listdir(d))
+    except OSError:
+        return False
+
+
+def set_task_session(name: str, task_id: str, **kv) -> dict:
+    """Merge kv into the record; a None value removes the key, an empty
+    record is dropped."""
+    state = load_state()
+    sessions = state.setdefault("sessions", {})
+    rec = sessions.get(f"{name}/{task_id}", {})
+    rec.update(kv)
+    rec = {k: v for k, v in rec.items() if v is not None}
+    if rec:
+        sessions[f"{name}/{task_id}"] = rec
+    else:
+        sessions.pop(f"{name}/{task_id}", None)
+    save_state(state)
+    return rec

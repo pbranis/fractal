@@ -12,6 +12,10 @@ the next request. The first read starts at most ``FIRST_READ`` bytes before
 the end - the title is re-written into the transcript every few turns, so the
 tail is enough.
 
+A Claude Code mod may keep a task summary per session in
+``$FRACTAL_SESSION_TASK_DIR/<session id>.json``; when the file is there it is
+passed through as ``task``.
+
 The optional one-sentence summary is made on demand by ``claude -p`` with a
 small model and cached in ``$FRACTAL_STATE_DIR/session-summaries.json``.
 """
@@ -24,12 +28,14 @@ import threading
 import time
 from collections import deque
 
-from fractal_config import HOME, REGISTRY, STATE_DIR, bin_path_env
+from fractal_config import CFG, HOME, REGISTRY, STATE_DIR, bin_path_env
 
 CLAUDE_DIR = os.path.join(HOME, ".claude")
 SESSIONS_DIR = os.path.join(CLAUDE_DIR, "sessions")
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
 SUMMARY_FILE = os.path.join(STATE_DIR, "session-summaries.json")
+TASK_DIR = CFG["FRACTAL_SESSION_TASK_DIR"]
+TASK_LEN = 160
 
 FIRST_READ = 4 * 1024 * 1024
 PROMPT_LEN = 400             # what the dashboard shows; the card clamps it further
@@ -81,7 +87,7 @@ def _answer_text(content) -> str:
 
 
 def _new_tail() -> dict:
-    return {"off": 0, "ino": None, "title": "", "prompt": "", "answer": "",
+    return {"off": 0, "ino": None, "title": "", "aiTitle": "", "customTitle": "", "prompt": "", "answer": "",
             "prompts": deque(maxlen=10), "answers": deque(maxlen=4), "partial": ""}
 
 
@@ -93,10 +99,13 @@ def _feed(t: dict, line: str) -> None:
     if not isinstance(o, dict) or o.get("isSidechain"):
         return
     k = o.get("type")
+    # a name given with /rename stays, however many ai-titles come after it
     if k == "ai-title" and o.get("aiTitle"):
-        t["title"] = o["aiTitle"]
-    elif k == "custom-title" and o.get("customTitle"):
-        t["title"] = o["customTitle"]
+        t["aiTitle"] = o["aiTitle"]
+        t["title"] = t["customTitle"] or t["aiTitle"]
+    elif k == "custom-title" and "customTitle" in o:
+        t["customTitle"] = o.get("customTitle") or ""
+        t["title"] = t["customTitle"] or t["aiTitle"]
     elif k == "user" and not o.get("isMeta"):
         p = _prompt_text((o.get("message") or {}).get("content"))
         if p:
@@ -127,6 +136,14 @@ def read_tail(path: str) -> dict:
             t["ino"] = st.st_ino
             t["off"] = max(0, st.st_size - FIRST_READ)
             skip_first = t["off"] > 0          # we landed mid-line
+            if skip_first:
+                # a /rename can sit anywhere before the tail; look for it once
+                with open(path, "rb") as f:
+                    for raw in f:
+                        if f.tell() > t["off"]:
+                            break
+                        if b'"custom-title"' in raw:
+                            _feed(t, raw.decode("utf-8", "replace"))
         else:
             skip_first = False
         if st.st_size == t["off"]:
@@ -170,12 +187,21 @@ def _projects() -> list[dict]:
         return []
 
 
+# extra terminal session opened from the dashboard: <project>-p<n> / -s<n>
+_EXTRA_TERM = re.compile(r"^(.+)-[ps][1-9][0-9]?$")
+
+
 def _project_of(tmux_session: str, cwd: str, projects: list[dict]) -> str | None:
-    """The tmux session name wins (work/ctl name sessions after the project);
-    otherwise the project whose root holds cwd, deepest root first."""
-    for p in projects:
-        if p.get("name") == tmux_session:
-            return p["name"]
+    """The tmux session name wins (work/ctl name sessions after the project,
+    extra terminals <project>-p<n>/-s<n> after the project too, unless a
+    registered project has that exact name); otherwise the project whose root
+    holds cwd, deepest root first."""
+    names = {p.get("name") for p in projects}
+    if tmux_session in names:
+        return tmux_session
+    m = _EXTRA_TERM.match(tmux_session)
+    if m and m.group(1) in names:
+        return m.group(1)
     best, blen = None, -1
     for p in projects:
         root = os.path.realpath(os.path.expanduser(p.get("root") or ""))
@@ -197,8 +223,47 @@ def load_summaries() -> dict:
         return {}
 
 
+def read_task(sid: str) -> dict | None:
+    """The mod's task file for this session, trimmed to what the card shows."""
+    if not sid or "/" in sid:
+        return None
+    try:
+        with open(os.path.join(TASK_DIR, sid + ".json"), encoding="utf-8") as f:
+            t = json.load(f)
+        summary = _clip(str(t.get("summary") or ""), TASK_LEN)
+        active = _clip(str(t.get("active") or ""), TASK_LEN)
+        if not summary and not active:
+            return None
+        return {"summary": summary, "active": active,
+                "done": int(t.get("done") or 0), "total": int(t.get("total") or 0),
+                "pinned": bool(t.get("pinned")), "at": (t.get("updatedAt") or 0) / 1000}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+# Tab name given in the browser terminal (the pencil, fractal-ctl term-title):
+# a tmux user option on the session or window. A format looks it up from the
+# pane up, so one list-panes says it for every pane.
+TITLE_OPT = "@fractal_title"
+
+
+def _pane_labels() -> dict:
+    try:
+        r = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{" + TITLE_OPT + "}"],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    out = {}
+    for line in r.stdout.splitlines():
+        pane, _, label = line.partition("\t")
+        if label:
+            out[pane.lstrip("%")] = label
+    return out
+
+
 def collect() -> list[dict]:
     projects = _projects()
+    labels = _pane_labels()
     summaries = load_summaries()
     out = []
     for fn in glob.glob(os.path.join(SESSIONS_DIR, "*.json")):
@@ -224,6 +289,7 @@ def collect() -> list[dict]:
             "sessionId": sid,
             "name": s.get("name") or "",
             "title": t["title"],
+            "label": labels.get(pane, "") if pane else "",
             "status": s.get("status") or "unknown",
             "since": (s.get("statusUpdatedAt") or s.get("updatedAt") or 0) / 1000,
             "started": (s.get("startedAt") or 0) / 1000,
@@ -233,6 +299,7 @@ def collect() -> list[dict]:
             "pane": pane,
             "prompt": _clip(t["prompt"], PROMPT_LEN),
             "answer": _clip(t["answer"], ANSWER_LEN),
+            "task": read_task(sid),
             "summary": summaries.get(sid),
             "summarizing": running,
             "summaryError": err,
